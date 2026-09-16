@@ -5,10 +5,40 @@
 
 // ---------- 领域模型 ----------
 
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  gitUrl: string | null;
+  createdAt: number;
+}
+
+export interface FileNode {
+  name: string;
+  path: string; // 相对项目根
+  type: 'file' | 'dir';
+  children?: FileNode[];
+}
+
+export interface GitChange {
+  path: string;
+  status: string;
+}
+
+export interface GitState {
+  isRepo: true;
+  branch: string;
+  defaultBranch: string;
+  branches: string[];
+  changes: GitChange[];
+}
+
 export interface SessionInfo {
   id: string;
   title: string;
   cwd: string;
+  projectId: string | null;
+  projectName: string | null;
   status: 'idle' | 'running' | 'error';
   /** Claude CLI 侧的 session id，用于 resume；首轮 init 前为 null */
   claudeSessionId: string | null;

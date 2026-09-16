@@ -1,27 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import type { WebSocket } from 'ws';
 import type { ClientMessage, HealthStatus } from '@codeforeman/shared';
-import { config, projectsDir } from './config.js';
+import { config } from './config.js';
 import { detectClaude } from './claude/detect.js';
 import { sessionManager } from './sessions/manager.js';
+import * as projects from './projects/index.js';
+import * as git from './git/index.js';
 
 const claudeVersion = await detectClaude();
 const app = Fastify({ logger: true });
 await app.register(fastifyWebsocket);
 
-// P1 阶段还没有项目管理（P2），先用一个默认工作区承载所有会话
-const defaultWorkspace = path.join(projectsDir, 'default');
-fs.mkdirSync(defaultWorkspace, { recursive: true });
-if (!fs.existsSync(path.join(defaultWorkspace, '.git'))) {
-  execFileSync('git', ['init'], { cwd: defaultWorkspace });
-}
-
-// ---------- API ----------
+// ---------- 健康检查 ----------
 
 app.get('/api/health', async (): Promise<HealthStatus> => ({
   status: 'ok',
@@ -30,12 +24,88 @@ app.get('/api/health', async (): Promise<HealthStatus> => ({
   endpoint: config.endpoint,
 }));
 
+// ---------- 项目 ----------
+
+app.get('/api/projects', async () => projects.listProjects());
+
+app.post('/api/projects', async (req, reply) => {
+  const body = (req.body ?? {}) as { name?: string; gitUrl?: string; existingPath?: string };
+  if (!body.name?.trim()) return reply.code(400).send({ error: 'name 必填' });
+  try {
+    return await projects.createProject({ name: body.name.trim(), gitUrl: body.gitUrl, existingPath: body.existingPath });
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/projects/:id', async (req) => {
+  const { id } = req.params as { id: string };
+  const { deleteFiles } = req.query as { deleteFiles?: string };
+  projects.deleteProject(id, deleteFiles === 'true');
+  return { ok: true };
+});
+
+// ---------- 项目文件 ----------
+
+function projectPathOr404(id: string): string {
+  const project = projects.getProject(id);
+  if (!project) throw new Error('project not found');
+  return project.path;
+}
+
+app.get('/api/projects/:id/tree', async (req) => {
+  return projects.fileTree(projectPathOr404((req.params as { id: string }).id));
+});
+
+app.get('/api/projects/:id/file', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const { path: rel } = req.query as { path: string };
+  try {
+    return { content: projects.readFile(projectPathOr404(id), rel) };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.put('/api/projects/:id/file', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const body = req.body as { path: string; content: string };
+  try {
+    projects.writeFile(projectPathOr404(id), body.path, body.content);
+    return { ok: true };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+// ---------- 项目 git 状态 ----------
+
+app.get('/api/projects/:id/git', async (req) => {
+  const root = projectPathOr404((req.params as { id: string }).id);
+  if (!(await git.isRepo(root))) return { isRepo: false };
+  return {
+    isRepo: true,
+    branch: await git.currentBranch(root),
+    defaultBranch: await git.defaultBranch(root),
+    branches: await git.branches(root),
+    changes: await git.status(root),
+  };
+});
+
+// ---------- 会话 ----------
+
 app.get('/api/sessions', async () => sessionManager.list());
 
-app.post('/api/sessions', async (req) => {
-  const body = (req.body ?? {}) as { title?: string; cwd?: string };
-  const session = sessionManager.create(body.cwd ?? defaultWorkspace, body.title ?? '');
-  return session;
+app.post('/api/sessions', async (req, reply) => {
+  const body = (req.body ?? {}) as { title?: string; projectId?: string };
+  let cwd: string | undefined;
+  if (body.projectId) {
+    const project = projects.getProject(body.projectId);
+    if (!project) return reply.code(404).send({ error: 'project not found' });
+    cwd = project.path;
+  }
+  if (!cwd) return reply.code(400).send({ error: 'projectId 必填' });
+  return sessionManager.create(cwd, body.title ?? '', body.projectId ?? null);
 });
 
 app.get('/api/sessions/:id/messages', async (req) => {
@@ -88,7 +158,7 @@ app.get('/ws', { websocket: true }, (socket: WebSocket) => {
         }
         break;
       case 'permission.respond':
-        sessionManager.respondPermission(msg.sessionId ?? '', msg.requestId, msg.allow);
+        sessionManager.respondPermission(msg.sessionId, msg.requestId, msg.allow);
         break;
     }
   });

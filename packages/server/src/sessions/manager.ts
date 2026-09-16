@@ -9,6 +9,8 @@ interface SessionRow {
   id: string;
   title: string;
   cwd: string;
+  project_id: string | null;
+  project_name?: string | null;
   claude_session_id: string | null;
   status: SessionInfo['status'];
   created_at: number;
@@ -20,12 +22,19 @@ function toInfo(row: SessionRow): SessionInfo {
     id: row.id,
     title: row.title,
     cwd: row.cwd,
+    projectId: row.project_id,
+    projectName: row.project_name ?? null,
     status: row.status,
     claudeSessionId: row.claude_session_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
+
+const SESSION_SELECT = `
+  SELECT s.*, p.name AS project_name FROM sessions s
+  LEFT JOIN projects p ON p.id = s.project_id
+`;
 
 /**
  * 会话管理器：会话 CRUD、Claude 进程生命周期、事件落库、向订阅者广播。
@@ -37,12 +46,12 @@ export class SessionManager {
   // ---------- 查询 ----------
 
   list(): SessionInfo[] {
-    const rows = db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as SessionRow[];
+    const rows = db.prepare(`${SESSION_SELECT} ORDER BY s.updated_at DESC`).all() as SessionRow[];
     return rows.map(toInfo);
   }
 
   get(id: string): SessionInfo | null {
-    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
+    const row = db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as SessionRow | undefined;
     return row ? toInfo(row) : null;
   }
 
@@ -56,12 +65,12 @@ export class SessionManager {
 
   // ---------- 生命周期 ----------
 
-  create(cwd: string, title = ''): SessionInfo {
+  create(cwd: string, title = '', projectId: string | null = null): SessionInfo {
     const id = randomUUID();
     const now = Date.now();
     db.prepare(
-      'INSERT INTO sessions (id, title, cwd, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(id, title, cwd, 'idle', now, now);
+      'INSERT INTO sessions (id, title, cwd, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, title, cwd, projectId, 'idle', now, now);
     return this.get(id)!;
   }
 
