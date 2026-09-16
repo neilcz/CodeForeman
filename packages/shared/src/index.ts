@@ -10,6 +10,8 @@ export interface ProjectInfo {
   name: string;
   path: string;
   gitUrl: string | null;
+  ownerId: string | null;
+  visibility: 'private' | 'public';
   createdAt: number;
 }
 

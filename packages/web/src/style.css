@@ -227,6 +227,33 @@ body {
 .link-btn:hover { color: #e4e4e7; border-color: #6366f1; }
 .timeline-item.empty { color: #52525b; }
 
+/* ---------- 登录 / 用户 ---------- */
+.login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-card {
+  width: 100%; max-width: 340px; background: #232428; border: 1px solid #2a2b31;
+  border-radius: 16px; padding: 32px 28px; display: flex; flex-direction: column; gap: 14px;
+}
+.login-card h1 { margin: 0; font-size: 22px; text-align: center; }
+.login-sub { margin: 0 0 8px; text-align: center; color: #71717a; font-size: 13px; }
+.login-card input {
+  padding: 10px 12px; border-radius: 10px; border: 1px solid #3f3f46;
+  background: #1e1f24; color: #e4e4e7; font-size: 14px; outline: none;
+}
+.login-card input:focus { border-color: #6366f1; }
+.login-card button {
+  padding: 10px; border-radius: 10px; border: none;
+  background: #6366f1; color: #fff; cursor: pointer; font-size: 15px;
+}
+.login-card button:disabled { background: #3f3f46; cursor: default; }
+
+.me { font-size: 13px; color: #a1a1aa; }
+.logout-btn { background: none; border: none; color: #71717a; cursor: pointer; font-size: 13px; }
+.logout-btn:hover { color: #f87171; }
+.vis-tag { font-size: 11px; margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: #3f3f46; color: #a1a1aa; }
+.vis-tag.public { background: #14532d; color: #86efac; }
+.user-list { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+.user-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #232428; border-radius: 10px; }
+
 /* ---------- H5 适配 ---------- */
 @media (max-width: 768px) {
   .sidebar { width: 100%; border-right: none; }

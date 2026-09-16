@@ -51,8 +51,13 @@ export class SessionManager {
 
   // ---------- 查询 ----------
 
-  list(): SessionInfo[] {
-    const rows = db.prepare(`${SESSION_SELECT} ORDER BY s.updated_at DESC`).all() as SessionRow[];
+  list(user?: { id: string; role: string }): SessionInfo[] {
+    const rows = (!user || user.role === 'admin')
+      ? db.prepare(`${SESSION_SELECT} ORDER BY s.updated_at DESC`).all() as SessionRow[]
+      : db.prepare(`${SESSION_SELECT}
+          WHERE (s.project_id IS NULL OR s.project_id IN
+            (SELECT id FROM projects WHERE owner_id = ? OR visibility = 'public'))
+          ORDER BY s.updated_at DESC`).all(user.id) as SessionRow[];
     return rows.map(toInfo);
   }
 

@@ -79,6 +79,24 @@ const migrations: string[] = [
   );
   CREATE INDEX IF NOT EXISTS idx_feature_items ON feature_items(feature_id, created_at);
   `,
+  // v5: 多用户 —— users/tokens + 项目归属与可见性
+  `
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS tokens (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  ALTER TABLE projects ADD COLUMN owner_id TEXT REFERENCES users(id);
+  ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private';
+  `,
 ];
 
 export function migrate() {

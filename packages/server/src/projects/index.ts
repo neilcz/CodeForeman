@@ -14,21 +14,38 @@ interface ProjectRow {
   name: string;
   path: string;
   git_url: string | null;
+  owner_id: string | null;
+  visibility: 'private' | 'public';
   created_at: number;
 }
 
 function toInfo(row: ProjectRow): ProjectInfo {
-  return { id: row.id, name: row.name, path: row.path, gitUrl: row.git_url, createdAt: row.created_at };
+  return {
+    id: row.id, name: row.name, path: row.path, gitUrl: row.git_url,
+    ownerId: row.owner_id, visibility: row.visibility, createdAt: row.created_at,
+  };
 }
 
-export function listProjects(): ProjectInfo[] {
-  const rows = db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as ProjectRow[];
+/** 可见项目：admin 全部；普通用户 = 自己的 + 公共的 */
+export function listProjects(user: { id: string; role: string }): ProjectInfo[] {
+  const rows = (user.role === 'admin'
+    ? db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all()
+    : db.prepare("SELECT * FROM projects WHERE owner_id = ? OR visibility = 'public' ORDER BY created_at DESC").all(user.id)
+  ) as ProjectRow[];
   return rows.map(toInfo);
 }
 
 export function getProject(id: string): ProjectInfo | null {
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
   return row ? toInfo(row) : null;
+}
+
+export function canAccess(user: { id: string; role: string }, projectId: string): boolean {
+  if (user.role === 'admin') return true;
+  const row = db.prepare('SELECT owner_id, visibility FROM projects WHERE id = ?').get(projectId) as
+    { owner_id: string | null; visibility: string } | undefined;
+  if (!row) return false;
+  return row.owner_id === user.id || row.visibility === 'public';
 }
 
 function slugify(name: string): string {
@@ -42,7 +59,7 @@ function slugify(name: string): string {
  * - 传 existingPath → 纳管宿主机已有目录（需为绝对路径且存在）
  * - 都不传 → 新建空目录并 git init
  */
-export async function createProject(opts: { name: string; gitUrl?: string; existingPath?: string }): Promise<ProjectInfo> {
+export async function createProject(opts: { name: string; gitUrl?: string; existingPath?: string; ownerId?: string; visibility?: 'private' | 'public' }): Promise<ProjectInfo> {
   const id = randomUUID();
   let projectPath: string;
 
@@ -62,8 +79,8 @@ export async function createProject(opts: { name: string; gitUrl?: string; exist
     }
   }
 
-  db.prepare('INSERT INTO projects (id, name, path, git_url, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, opts.name, projectPath, opts.gitUrl ?? null, Date.now());
+  db.prepare('INSERT INTO projects (id, name, path, git_url, owner_id, visibility, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, opts.name, projectPath, opts.gitUrl ?? null, opts.ownerId ?? null, opts.visibility ?? 'private', Date.now());
   return getProject(id)!;
 }
 

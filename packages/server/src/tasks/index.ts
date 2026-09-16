@@ -68,10 +68,19 @@ function setStatus(id: string, status: TaskStatus, extra: Partial<Record<'error'
 
 // ---------- CRUD ----------
 
-export function listTasks(projectId?: string): TaskInfo[] {
-  const rows = (projectId
-    ? db.prepare(`${TASK_SELECT} WHERE t.project_id = ? ORDER BY t.updated_at DESC`).all(projectId)
-    : db.prepare(`${TASK_SELECT} ORDER BY t.updated_at DESC`).all()) as TaskRow[];
+export function listTasks(user: { id: string; role: string }, projectId?: string): TaskInfo[] {
+  const conds: string[] = [];
+  const params: string[] = [];
+  if (projectId) {
+    conds.push('t.project_id = ?');
+    params.push(projectId);
+  }
+  if (user.role !== 'admin') {
+    conds.push("t.project_id IN (SELECT id FROM projects WHERE owner_id = ? OR visibility = 'public')");
+    params.push(user.id);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const rows = db.prepare(`${TASK_SELECT} ${where} ORDER BY t.updated_at DESC`).all(...params) as TaskRow[];
   return rows.map(toInfo);
 }
 

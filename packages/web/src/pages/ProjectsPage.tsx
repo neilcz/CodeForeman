@@ -7,6 +7,7 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [name, setName] = useState('');
   const [gitUrl, setGitUrl] = useState('');
+  const [isPublic, setIsPublic] = useState(false);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
@@ -19,7 +20,11 @@ export default function ProjectsPage() {
     setCreating(true);
     setError('');
     try {
-      const p = await api.post<ProjectInfo>('/api/projects', { name: name.trim(), gitUrl: gitUrl.trim() || undefined });
+      const p = await api.post<ProjectInfo>('/api/projects', {
+        name: name.trim(),
+        gitUrl: gitUrl.trim() || undefined,
+        visibility: isPublic ? 'public' : 'private',
+      });
       navigate(`/projects/${p.id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -34,13 +39,20 @@ export default function ProjectsPage() {
       <div className="create-form">
         <input placeholder="项目名称" value={name} onChange={(e) => setName(e.target.value)} />
         <input placeholder="git 仓库地址（可选，留空则新建空项目）" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
+        <label className="auto-merge">
+          <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />
+          公共项目（所有用户可见，协作时用不同分支隔离）
+        </label>
         <button onClick={create} disabled={creating || !name.trim()}>{creating ? '创建中…' : '创建项目'}</button>
       </div>
       {error && <div className="error">{error}</div>}
       <div className="project-grid">
         {projects.map((p) => (
           <div key={p.id} className="project-card" onClick={() => navigate(`/projects/${p.id}`)}>
-            <div className="project-name">{p.name}</div>
+            <div className="project-name">
+              {p.name}
+              <span className={`vis-tag ${p.visibility}`}>{p.visibility === 'public' ? '公共' : '私有'}</span>
+            </div>
             <div className="project-path">{p.path}</div>
           </div>
         ))}
