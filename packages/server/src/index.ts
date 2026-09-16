@@ -1,18 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
-import { envelope, type HealthStatus, type ServerHello } from '@codeforeman/shared';
-import { config } from './config.js';
+import type { WebSocket } from 'ws';
+import type { ClientMessage, HealthStatus } from '@codeforeman/shared';
+import { config, projectsDir } from './config.js';
 import { detectClaude } from './claude/detect.js';
+import { sessionManager } from './sessions/manager.js';
 
-const startedAt = Date.now();
 const claudeVersion = await detectClaude();
-
 const app = Fastify({ logger: true });
-
 await app.register(fastifyWebsocket);
+
+// P1 阶段还没有项目管理（P2），先用一个默认工作区承载所有会话
+const defaultWorkspace = path.join(projectsDir, 'default');
+fs.mkdirSync(defaultWorkspace, { recursive: true });
+if (!fs.existsSync(path.join(defaultWorkspace, '.git'))) {
+  execFileSync('git', ['init'], { cwd: defaultWorkspace });
+}
 
 // ---------- API ----------
 
@@ -20,26 +27,77 @@ app.get('/api/health', async (): Promise<HealthStatus> => ({
   status: 'ok',
   version: config.version,
   claudeAvailable: claudeVersion !== null,
+  endpoint: config.endpoint,
 }));
 
-// ---------- WebSocket（P0：握手 + ping/pong，验证中继链路） ----------
+app.get('/api/sessions', async () => sessionManager.list());
 
-app.get('/ws', { websocket: true }, (socket) => {
-  const hello: ServerHello = {
-    version: config.version,
-    uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+app.post('/api/sessions', async (req) => {
+  const body = (req.body ?? {}) as { title?: string; cwd?: string };
+  const session = sessionManager.create(body.cwd ?? defaultWorkspace, body.title ?? '');
+  return session;
+});
+
+app.get('/api/sessions/:id/messages', async (req) => {
+  const { id } = req.params as { id: string };
+  const { after } = req.query as { after?: string };
+  return sessionManager.history(id, after ? Number(after) : 0);
+});
+
+// ---------- WebSocket ----------
+
+app.get('/ws', { websocket: true }, (socket: WebSocket) => {
+  const send = (msg: unknown) => {
+    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
   };
-  socket.send(JSON.stringify(envelope('server.hello', hello)));
+
+  send({ type: 'server.hello', version: config.version, sessions: sessionManager.list() });
+
+  // sessionId -> listener，断开时统一退订
+  const subscriptions = new Map<string, (msg: unknown) => void>();
 
   socket.on('message', (raw: Buffer) => {
+    let msg: ClientMessage;
     try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === 'client.ping') {
-        socket.send(JSON.stringify(envelope('server.pong', msg.payload)));
-      }
+      msg = JSON.parse(raw.toString());
     } catch {
-      // 忽略无法解析的消息
+      return;
     }
+
+    switch (msg.type) {
+      case 'session.subscribe': {
+        if (subscriptions.has(msg.sessionId)) return;
+        const listener = (m: unknown) => send(m);
+        subscriptions.set(msg.sessionId, listener);
+        sessionManager.subscribe(msg.sessionId, listener as never);
+        break;
+      }
+      case 'session.unsubscribe': {
+        const listener = subscriptions.get(msg.sessionId);
+        if (listener) {
+          sessionManager.unsubscribe(msg.sessionId, listener as never);
+          subscriptions.delete(msg.sessionId);
+        }
+        break;
+      }
+      case 'chat.send':
+        try {
+          sessionManager.send(msg.sessionId, msg.text);
+        } catch (err) {
+          send({ type: 'chat.error', sessionId: msg.sessionId, error: (err as Error).message });
+        }
+        break;
+      case 'permission.respond':
+        sessionManager.respondPermission(msg.sessionId ?? '', msg.requestId, msg.allow);
+        break;
+    }
+  });
+
+  socket.on('close', () => {
+    for (const [sessionId, listener] of subscriptions) {
+      sessionManager.unsubscribe(sessionId, listener as never);
+    }
+    subscriptions.clear();
   });
 });
 
@@ -59,4 +117,4 @@ if (fs.existsSync(webDist)) {
 }
 
 await app.listen({ port: config.port, host: config.host });
-app.log.info(`CodeForeman server ready, claude CLI: ${claudeVersion ?? 'NOT FOUND'}`);
+app.log.info(`CodeForeman ready | claude: ${claudeVersion ?? 'NOT FOUND'} | endpoint: ${config.endpoint ?? 'official'}`);

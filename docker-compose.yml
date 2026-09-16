@@ -8,8 +8,9 @@ services:
     environment:
       PORT: 3780
       DATA_DIR: /data
-      # 二选一：挂卷恢复订阅登录态（推荐），或直接注入 apikey
-      # ANTHROPIC_API_KEY: sk-ant-...
+    # Claude 凭证与模型配置（见 .env.example；支持 Kimi 等兼容端点或官方订阅）
+    env_file:
+      - .env
     volumes:
       # 代码在宿主机磁盘，git 管理；容器只是挂载使用
       - ./data/projects:/data/projects

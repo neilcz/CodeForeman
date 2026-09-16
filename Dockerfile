@@ -1,5 +1,8 @@
 # ---------- 构建阶段 ----------
 FROM node:22-bookworm-slim AS build
+# better-sqlite3 优先用预编译产物，下载失败时回退源码编译
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # 先只拷 package.json，利用层缓存
