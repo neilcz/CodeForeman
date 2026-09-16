@@ -1,0 +1,22 @@
+{
+  "name": "codeforeman",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @codeforeman/server & npm run dev -w @codeforeman/web",
+    "dev:server": "npm run dev -w @codeforeman/server",
+    "dev:web": "npm run dev -w @codeforeman/web",
+    "build": "npm run build -w @codeforeman/shared && npm run build -w @codeforeman/server && npm run build -w @codeforeman/web",
+    "start": "node packages/server/dist/index.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

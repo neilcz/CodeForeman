@@ -1,0 +1,22 @@
+services:
+  codeforeman:
+    build: .
+    container_name: codeforeman
+    restart: unless-stopped
+    ports:
+      - "3780:3780"
+    environment:
+      PORT: 3780
+      DATA_DIR: /data
+      # 二选一：挂卷恢复订阅登录态（推荐），或直接注入 apikey
+      # ANTHROPIC_API_KEY: sk-ant-...
+    volumes:
+      # 代码在宿主机磁盘，git 管理；容器只是挂载使用
+      - ./data/projects:/data/projects
+      - codeforeman-db:/data/db
+      # Claude 登录态持久化：容器重建后不必重新登录
+      - claude-config:/root/.claude
+
+volumes:
+  codeforeman-db:
+  claude-config:
