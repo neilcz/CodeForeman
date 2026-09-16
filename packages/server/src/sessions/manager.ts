@@ -41,8 +41,38 @@ const SESSION_SELECT = `
  */
 export class SessionManager {
   private live = new Map<string, ClaudeSession>();
+  private lastActivity = new Map<string, number>();
   private subscribers = new Map<string, Set<Listener>>();
   private turnDoneListeners = new Set<(sessionId: string) => void>();
+
+  /** 空闲会话回收周期（30 分钟检查一次） */
+  private static SWEEP_INTERVAL = 30 * 60 * 1000;
+  /** 空闲超过 6 小时的 Claude 进程回收（会话数据在库里，可随时 resume） */
+  private static IDLE_TTL = 6 * 3600 * 1000;
+
+  constructor() {
+    const timer = setInterval(() => this.sweep(), SessionManager.SWEEP_INTERVAL);
+    timer.unref();
+  }
+
+  private sweep() {
+    const now = Date.now();
+    for (const [id] of this.live) {
+      const idle = now - (this.lastActivity.get(id) ?? 0);
+      if (idle > SessionManager.IDLE_TTL) this.closeSession(id);
+    }
+  }
+
+  closeSession(id: string) {
+    this.live.get(id)?.close();
+    this.live.delete(id);
+    this.lastActivity.delete(id);
+  }
+
+  /** 优雅停机：关闭所有 Claude 进程 */
+  shutdownAll() {
+    for (const id of [...this.live.keys()]) this.closeSession(id);
+  }
 
   /** 一轮对话结束时触发（任务编排等模块用来感知 Claude 干完活） */
   onTurnDone(fn: (sessionId: string) => void) {
@@ -97,6 +127,7 @@ export class SessionManager {
       { cwd: info.cwd, resume: info.claudeSessionId },
       {
         onEvent: (event) => {
+          this.lastActivity.set(id, Date.now());
           // system:init 之外的 system 事件（thinking_tokens 等进度遥测）不落库不广播
           const e = event as { type: string; subtype?: string };
           if (e.type === 'system' && e.subtype !== 'init') return;
@@ -140,6 +171,7 @@ export class SessionManager {
   send(id: string, text: string) {
     const session = this.ensureLive(id);
     this.setStatus(id, 'running');
+    this.lastActivity.set(id, Date.now());
     // 用户消息也落库 + 广播，保证多端同步
     const userEvent = {
       type: 'user',

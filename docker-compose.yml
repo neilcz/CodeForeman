@@ -5,10 +5,17 @@ services:
     restart: unless-stopped
     ports:
       - "3780:3780"
+    # 资源限制：防止失控的 Claude 子进程拖垮宿主机
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
     environment:
       PORT: 3780
       DATA_DIR: /data
     # Claude 凭证与模型配置（见 .env.example；支持 Kimi 等兼容端点或官方订阅）
+    # 管理员初始密码也在 .env 里设置：ADMIN_PASSWORD=xxx（不设置则默认 admin/admin 并告警）
     env_file:
       - .env
     volumes:

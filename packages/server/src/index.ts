@@ -3,9 +3,11 @@ import path from 'node:path';
 import Fastify, { type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
+import pino from 'pino';
 import type { WebSocket } from 'ws';
 import type { ClientMessage, HealthStatus } from '@codeforeman/shared';
 import { config } from './config.js';
+import { db } from './db/index.js';
 import { detectClaude } from './claude/detect.js';
 import { sessionManager } from './sessions/manager.js';
 import * as projects from './projects/index.js';
@@ -22,8 +24,31 @@ declare module 'fastify' {
 
 auth.seedAdmin();
 
+// ---------- 崩溃恢复 ----------
+// 服务重启时，上次残留在 running 的会话/任务的进程已不存在：
+// 会话复位为 idle（随时可凭 claude_session_id resume）；任务转为 review 等人工确认结果
+function recoverFromCrash() {
+  const s = db.prepare("UPDATE sessions SET status = 'idle' WHERE status = 'running'").run();
+  const t = db.prepare(
+    "UPDATE tasks SET status = 'review', error = '服务重启中断：请确认分支上的改动后验收或重新执行', updated_at = ? WHERE status = 'running'",
+  ).run(Date.now());
+  if (s.changes || t.changes) {
+    console.log(`[CodeForeman] 崩溃恢复：复位 ${s.changes} 个会话、${t.changes} 个任务`);
+  }
+}
+recoverFromCrash();
+
+// ---------- 日志：stdout + 文件双写 ----------
+
+const logDir = path.join(config.dataDir, 'logs');
+fs.mkdirSync(logDir, { recursive: true });
+const logger = pino(pino.multistream([
+  { stream: process.stdout },
+  { stream: fs.createWriteStream(path.join(logDir, 'server.log'), { flags: 'a' }) },
+]));
+
 const claudeVersion = await detectClaude();
-const app = Fastify({ logger: true });
+const app = Fastify({ loggerInstance: logger });
 await app.register(fastifyWebsocket);
 
 // ---------- 认证 ----------
@@ -390,3 +415,13 @@ if (fs.existsSync(webDist)) {
 
 await app.listen({ port: config.port, host: config.host });
 app.log.info(`CodeForeman ready | claude: ${claudeVersion ?? 'NOT FOUND'} | endpoint: ${config.endpoint ?? 'official'}`);
+
+// ---------- 优雅停机 ----------
+const shutdown = async (signal: string) => {
+  app.log.info(`${signal} received, shutting down…`);
+  sessionManager.shutdownAll();
+  await app.close();
+  process.exit(0);
+};
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
