@@ -9,6 +9,7 @@ import { config } from './config.js';
 import { detectClaude } from './claude/detect.js';
 import { sessionManager } from './sessions/manager.js';
 import * as projects from './projects/index.js';
+import * as tasks from './tasks/index.js';
 import * as git from './git/index.js';
 
 const claudeVersion = await detectClaude();
@@ -114,9 +115,86 @@ app.get('/api/sessions/:id/messages', async (req) => {
   return sessionManager.history(id, after ? Number(after) : 0);
 });
 
+// ---------- 任务（Backlog） ----------
+
+app.get('/api/tasks', async (req) => {
+  const { projectId } = req.query as { projectId?: string };
+  return tasks.listTasks(projectId);
+});
+
+app.post('/api/tasks', async (req, reply) => {
+  const body = req.body as { projectId?: string; title?: string; description?: string; source?: 'manual' | 'chat'; autoMerge?: boolean };
+  if (!body.projectId || !body.title?.trim()) return reply.code(400).send({ error: 'projectId 和 title 必填' });
+  try {
+    return tasks.createTask({
+      projectId: body.projectId,
+      title: body.title.trim(),
+      description: body.description,
+      source: body.source,
+      autoMerge: body.autoMerge,
+    });
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.patch('/api/tasks/:id', async (req, reply) => {
+  try {
+    return tasks.updateTask((req.params as { id: string }).id, req.body as never);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/tasks/:id', async (req, reply) => {
+  try {
+    tasks.deleteTask((req.params as { id: string }).id);
+    return { ok: true };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/tasks/:id/execute', async (req, reply) => {
+  try {
+    return await tasks.executeTask((req.params as { id: string }).id);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/tasks/:id/complete', async (req, reply) => {
+  try {
+    return await tasks.completeTask((req.params as { id: string }).id);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/tasks/:id/fail', async (req, reply) => {
+  const body = (req.body ?? {}) as { reason?: string };
+  try {
+    return tasks.failTask((req.params as { id: string }).id, body.reason ?? '人工标记失败');
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
 // ---------- WebSocket ----------
 
+/** 所有在线 socket，用于 task.updated 等全局广播 */
+const allSockets = new Set<WebSocket>();
+
+// 任务状态变化 → 广播给所有连接
+tasks.onTaskUpdate((task) => {
+  const msg = JSON.stringify({ type: 'task.updated', task });
+  for (const s of allSockets) {
+    if (s.readyState === s.OPEN) s.send(msg);
+  }
+});
+
 app.get('/ws', { websocket: true }, (socket: WebSocket) => {
+  allSockets.add(socket);
   const send = (msg: unknown) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
   };
@@ -164,6 +242,7 @@ app.get('/ws', { websocket: true }, (socket: WebSocket) => {
   });
 
   socket.on('close', () => {
+    allSockets.delete(socket);
     for (const [sessionId, listener] of subscriptions) {
       sessionManager.unsubscribe(sessionId, listener as never);
     }

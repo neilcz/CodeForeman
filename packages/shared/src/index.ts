@@ -46,6 +46,26 @@ export interface SessionInfo {
   updatedAt: number;
 }
 
+export type TaskStatus = 'draft' | 'queued' | 'running' | 'review' | 'done' | 'failed' | 'conflict';
+
+export interface TaskInfo {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  title: string;
+  description: string;
+  source: 'manual' | 'chat';
+  status: TaskStatus;
+  /** true=验收后自动合并回主分支并删除任务分支；false=保留分支手动合并 */
+  autoMerge: boolean;
+  branch: string | null;
+  sessionId: string | null;
+  mergeCommit: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface HealthStatus {
   status: 'ok';
   version: string;
@@ -72,6 +92,8 @@ export type ServerMessage =
   | { type: 'chat.done'; sessionId: string }
   | { type: 'chat.error'; sessionId: string; error: string }
   | { type: 'permission.request'; requestId: string; sessionId: string; toolName: string; input: unknown }
-  | { type: 'permission.resolved'; requestId: string; allow: boolean };
+  | { type: 'permission.resolved'; requestId: string; allow: boolean }
+  /** 任务状态变化（广播给所有连接） */
+  | { type: 'task.updated'; task: TaskInfo };
 
 export type WsMessage = ClientMessage | ServerMessage;

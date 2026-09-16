@@ -168,6 +168,21 @@ export default function ChatPage() {
     setPermission(null);
   };
 
+  // 把聊天中聊出的想法存进 Backlog
+  const saveAsTask = async () => {
+    if (!active?.projectId) return;
+    const title = prompt('想法标题（一句话）');
+    if (!title?.trim()) return;
+    const description = prompt('详细描述（可选）') ?? '';
+    await api.post('/api/tasks', {
+      projectId: active.projectId,
+      title: title.trim(),
+      description,
+      source: 'chat',
+    });
+    alert('已加入想法队列');
+  };
+
   return (
     <div className="chat-page">
       <aside className={`sidebar ${sessionId ? 'hidden-mobile' : ''}`}>
@@ -206,6 +221,8 @@ export default function ChatPage() {
               <button className="back-mobile" onClick={() => navigate('/chat')}>←</button>
               <span>{active.title || `会话 ${active.id.slice(0, 8)}`}</span>
               <span className="cwd">{active.projectName ?? active.cwd}</span>
+              <span className="spacer" />
+              {active.projectId && <button className="idea-btn" onClick={saveAsTask}>💡 存为想法</button>}
             </header>
 
             <div className="messages">

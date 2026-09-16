@@ -42,6 +42,12 @@ const SESSION_SELECT = `
 export class SessionManager {
   private live = new Map<string, ClaudeSession>();
   private subscribers = new Map<string, Set<Listener>>();
+  private turnDoneListeners = new Set<(sessionId: string) => void>();
+
+  /** 一轮对话结束时触发（任务编排等模块用来感知 Claude 干完活） */
+  onTurnDone(fn: (sessionId: string) => void) {
+    this.turnDoneListeners.add(fn);
+  }
 
   // ---------- 查询 ----------
 
@@ -100,6 +106,7 @@ export class SessionManager {
         onTurnDone: () => {
           this.setStatus(id, 'idle');
           this.broadcast(id, { type: 'chat.done', sessionId: id });
+          for (const fn of this.turnDoneListeners) fn(id);
         },
         onPermissionRequest: (req) => {
           this.broadcast(id, {

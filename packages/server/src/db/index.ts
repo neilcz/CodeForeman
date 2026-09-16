@@ -40,6 +40,25 @@ const migrations: string[] = [
   );
   ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id);
   `,
+  // v3: Backlog —— 想法/计划任务
+  `
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'draft',
+    auto_merge INTEGER NOT NULL DEFAULT 1,
+    branch TEXT,
+    session_id TEXT,
+    merge_commit TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, status);
+  `,
 ];
 
 export function migrate() {

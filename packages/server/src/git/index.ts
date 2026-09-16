@@ -53,3 +53,53 @@ export async function defaultBranch(cwd: string): Promise<string> {
   if (all.includes('master')) return 'master';
   return (await currentBranch(cwd)) || 'main';
 }
+
+export async function checkout(cwd: string, branch: string): Promise<void> {
+  await git(['checkout', branch], cwd);
+}
+
+export async function hasCommits(cwd: string): Promise<boolean> {
+  try {
+    await git(['rev-parse', '--verify', 'HEAD'], cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const COMMIT_ENV = ['-c', 'user.name=CodeForeman', '-c', 'user.email=codeforeman@local'];
+
+export async function createBranch(cwd: string, branch: string, from: string): Promise<void> {
+  // 空仓库（尚无任何提交）先落一个空初始提交，否则 from 分支还不存在
+  if (!(await hasCommits(cwd))) {
+    await git([...COMMIT_ENV, 'commit', '--allow-empty', '-m', 'chore: initial commit'], cwd);
+  }
+  await git(['checkout', from], cwd);
+  await git(['checkout', '-b', branch], cwd);
+}
+
+/** 提交全部改动；无改动时返回 false */
+export async function commitAll(cwd: string, message: string): Promise<boolean> {
+  if ((await status(cwd)).length === 0) return false;
+  await git(['add', '-A'], cwd);
+  await git([...COMMIT_ENV, 'commit', '-m', message], cwd);
+  return true;
+}
+
+/** 合并分支（--no-ff）；冲突时抛错 */
+export async function merge(cwd: string, branch: string): Promise<void> {
+  await git(['merge', '--no-ff', '-m', `Merge branch '${branch}'`, branch], cwd);
+}
+
+export async function mergeAbort(cwd: string): Promise<void> {
+  await git(['merge', '--abort'], cwd);
+}
+
+export async function deleteBranch(cwd: string, branch: string): Promise<void> {
+  await git(['branch', '-d', branch], cwd);
+}
+
+export async function headCommit(cwd: string): Promise<string> {
+  return git(['rev-parse', '--short', 'HEAD'], cwd);
+}
+
