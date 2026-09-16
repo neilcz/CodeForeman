@@ -3,6 +3,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import ChatPage from './pages/ChatPage';
 import BacklogPage from './pages/BacklogPage';
+import FeaturesPage from './pages/FeaturesPage';
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
         <NavLink to="/projects">项目</NavLink>
         <NavLink to="/chat">会话</NavLink>
         <NavLink to="/backlog">想法</NavLink>
+        <NavLink to="/features">功能</NavLink>
       </nav>
       <div className="page">
         <Routes>
@@ -21,6 +23,7 @@ export default function App() {
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/chat/:sessionId" element={<ChatPage />} />
           <Route path="/backlog" element={<BacklogPage />} />
+          <Route path="/features" element={<FeaturesPage />} />
         </Routes>
       </div>
     </div>

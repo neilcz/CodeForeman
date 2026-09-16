@@ -59,6 +59,26 @@ const migrations: string[] = [
   );
   CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, status);
   `,
+  // v4: 功能演进 —— features + 关联项（session/task）
+  `
+  CREATE TABLE IF NOT EXISTS features (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS feature_items (
+    id TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL REFERENCES features(id),
+    kind TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(feature_id, kind, ref_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_feature_items ON feature_items(feature_id, created_at);
+  `,
 ];
 
 export function migrate() {

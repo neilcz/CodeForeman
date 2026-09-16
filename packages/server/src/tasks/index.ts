@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from '../db/index.js';
 import { getProject } from '../projects/index.js';
 import { sessionManager } from '../sessions/manager.js';
+import { autoArchiveTask } from '../features/index.js';
 import * as git from '../git/index.js';
 import type { TaskInfo, TaskStatus } from '@codeforeman/shared';
 
@@ -161,6 +162,7 @@ export async function completeTask(id: string): Promise<TaskInfo> {
 
   if (!task.autoMerge) {
     setStatus(id, 'done');
+    autoArchiveTask(id).catch(() => {});
     return getTask(id)!;
   }
 
@@ -178,6 +180,8 @@ export async function completeTask(id: string): Promise<TaskInfo> {
   const mergeCommit = await git.headCommit(project.path);
   await git.deleteBranch(project.path, branch).catch(() => {});
   setStatus(id, 'done', { merge_commit: mergeCommit });
+  // 异步归档到功能演进（生成摘要要走一次 Claude 调用，不阻塞验收响应）
+  autoArchiveTask(id).catch(() => {});
   return getTask(id)!;
 }
 

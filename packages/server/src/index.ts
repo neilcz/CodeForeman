@@ -10,6 +10,7 @@ import { detectClaude } from './claude/detect.js';
 import { sessionManager } from './sessions/manager.js';
 import * as projects from './projects/index.js';
 import * as tasks from './tasks/index.js';
+import * as features from './features/index.js';
 import * as git from './git/index.js';
 
 const claudeVersion = await detectClaude();
@@ -175,6 +176,34 @@ app.post('/api/tasks/:id/fail', async (req, reply) => {
   const body = (req.body ?? {}) as { reason?: string };
   try {
     return tasks.failTask((req.params as { id: string }).id, body.reason ?? '人工标记失败');
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+// ---------- 功能演进 ----------
+
+app.get('/api/features', async (req) => {
+  const { projectId } = req.query as { projectId: string };
+  if (!projectId) return [];
+  return features.listFeatures(projectId);
+});
+
+app.post('/api/features', async (req, reply) => {
+  const body = req.body as { projectId?: string; title?: string; summary?: string };
+  if (!body.projectId || !body.title?.trim()) return reply.code(400).send({ error: 'projectId 和 title 必填' });
+  try {
+    return features.createFeature(body.projectId, body.title.trim(), body.summary ?? '');
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/features/:id/link', async (req, reply) => {
+  const body = req.body as { kind: 'session' | 'task'; refId: string };
+  try {
+    features.linkItem((req.params as { id: string }).id, body.kind, body.refId);
+    return { ok: true };
   } catch (err) {
     return reply.code(400).send({ error: (err as Error).message });
   }

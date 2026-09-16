@@ -183,6 +183,25 @@ export default function ChatPage() {
     alert('已加入想法队列');
   };
 
+  // 把当前会话归档到功能演进
+  const archiveToFeature = async () => {
+    if (!active?.projectId || !sessionId) return;
+    const list = await api.get<{ id: string; title: string }[]>(`/api/features?projectId=${active.projectId}`);
+    const options = list.map((f, i) => `${i + 1}. ${f.title}`).join('\n');
+    const answer = prompt(`归档到功能：\n${options}\n\n输入序号选择，或直接输入新功能名称`);
+    if (!answer?.trim()) return;
+    let featureId: string;
+    const idx = Number(answer);
+    if (Number.isInteger(idx) && idx >= 1 && idx <= list.length) {
+      featureId = list[idx - 1].id;
+    } else {
+      const created = await api.post<{ id: string }>('/api/features', { projectId: active.projectId, title: answer.trim() });
+      featureId = created.id;
+    }
+    await api.post(`/api/features/${featureId}/link`, { kind: 'session', refId: sessionId });
+    alert('已归档到功能演进');
+  };
+
   return (
     <div className="chat-page">
       <aside className={`sidebar ${sessionId ? 'hidden-mobile' : ''}`}>
@@ -223,6 +242,7 @@ export default function ChatPage() {
               <span className="cwd">{active.projectName ?? active.cwd}</span>
               <span className="spacer" />
               {active.projectId && <button className="idea-btn" onClick={saveAsTask}>💡 存为想法</button>}
+              {active.projectId && <button className="idea-btn" onClick={archiveToFeature}>📁 归档</button>}
             </header>
 
             <div className="messages">

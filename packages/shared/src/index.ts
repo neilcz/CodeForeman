@@ -48,6 +48,31 @@ export interface SessionInfo {
 
 export type TaskStatus = 'draft' | 'queued' | 'running' | 'review' | 'done' | 'failed' | 'conflict';
 
+/** 功能演进：一个功能聚合多次会话/任务的迭代记录 */
+export interface FeatureInfo {
+  id: string;
+  projectId: string;
+  title: string;
+  summary: string;
+  createdAt: number;
+  updatedAt: number;
+  items: FeatureItemInfo[];
+}
+
+export interface FeatureItemInfo {
+  id: string;
+  kind: 'session' | 'task';
+  refId: string;
+  createdAt: number;
+  /** 冗余展示字段：会话标题或任务标题 */
+  label: string;
+  /** 任务特有：状态 / 合并 commit */
+  taskStatus?: TaskStatus;
+  mergeCommit?: string | null;
+  /** 会话特有：首条用户需求摘要 */
+  firstPrompt?: string | null;
+}
+
 export interface TaskInfo {
   id: string;
   projectId: string;
