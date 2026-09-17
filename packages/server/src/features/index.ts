@@ -11,18 +11,35 @@ const execFileAsync = promisify(execFile);
 interface FeatureRow {
   id: string;
   project_id: string;
+  project_name?: string | null;
   title: string;
   summary: string;
   created_at: number;
   updated_at: number;
 }
 
+const FEATURE_SELECT = `
+  SELECT f.*, p.name AS project_name FROM features f
+  JOIN projects p ON p.id = f.project_id
+`;
+
 // ---------- 查询 ----------
 
 export function listFeatures(projectId: string): FeatureInfo[] {
   const rows = db.prepare(
-    'SELECT * FROM features WHERE project_id = ? ORDER BY updated_at DESC',
+    `${FEATURE_SELECT} WHERE f.project_id = ? ORDER BY f.updated_at DESC`,
   ).all(projectId) as FeatureRow[];
+  return rows.map((f) => ({ ...toInfo(f), items: listItems(f.id) }));
+}
+
+/** 跨项目列出当前用户可见的全部功能（admin 全部；否则自己+公共项目的） */
+export function listFeaturesForUser(user: { id: string; role: string }, projectId?: string): FeatureInfo[] {
+  if (projectId) return listFeatures(projectId);
+  const rows = (user.role === 'admin'
+    ? db.prepare(`${FEATURE_SELECT} ORDER BY f.updated_at DESC`).all()
+    : db.prepare(`${FEATURE_SELECT}
+        WHERE (p.owner_id = ? OR p.visibility = 'public')
+        ORDER BY f.updated_at DESC`).all(user.id)) as FeatureRow[];
   return rows.map((f) => ({ ...toInfo(f), items: listItems(f.id) }));
 }
 
@@ -30,6 +47,7 @@ function toInfo(row: FeatureRow): Omit<FeatureInfo, 'items'> {
   return {
     id: row.id,
     projectId: row.project_id,
+    projectName: row.project_name ?? null,
     title: row.title,
     summary: row.summary,
     createdAt: row.created_at,

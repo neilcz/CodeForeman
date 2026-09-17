@@ -11,19 +11,17 @@ function formatTime(ts: number) {
 
 export default function FeaturesPage() {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [projectId, setProjectId] = useState('');
+  const [projectId, setProjectId] = useState(''); // '' = 所有项目
   const [features, setFeatures] = useState<FeatureInfo[]>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
-    api.get<ProjectInfo[]>('/api/projects').then((ps) => {
-      setProjects(ps);
-      if (ps.length > 0) setProjectId((cur) => cur || ps[0].id);
-    });
+    api.get<ProjectInfo[]>('/api/projects').then(setProjects);
   }, []);
 
   useEffect(() => {
-    if (projectId) api.get<FeatureInfo[]>(`/api/features?projectId=${projectId}`).then(setFeatures);
+    const url = projectId ? `/api/features?projectId=${projectId}` : '/api/features';
+    api.get<FeatureInfo[]>(url).then(setFeatures);
   }, [projectId]);
 
   return (
@@ -32,9 +30,9 @@ export default function FeaturesPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>功能演进</Typography.Title>
         <Select
           style={{ minWidth: 200 }}
-          value={projectId || undefined}
-          placeholder="选择项目"
-          options={projects.map((p) => ({ value: p.id, label: p.name }))}
+          value={projectId}
+          placeholder="按项目筛选"
+          options={[{ value: '', label: '所有项目' }, ...projects.map((p) => ({ value: p.id, label: p.name }))]}
           onChange={setProjectId}
         />
       </Space>
@@ -48,7 +46,17 @@ export default function FeaturesPage() {
         } />
       ) : (
         features.map((f) => (
-          <Card key={f.id} size="small" style={{ marginBottom: 12 }} title={f.title}>
+          <Card
+            key={f.id}
+            size="small"
+            style={{ marginBottom: 12 }}
+            title={
+              <Space>
+                {f.title}
+                {!projectId && f.projectName && <Tag>{f.projectName}</Tag>}
+              </Space>
+            }
+          >
             {f.summary && (
               <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>{f.summary}</Typography.Paragraph>
             )}

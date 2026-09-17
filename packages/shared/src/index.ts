@@ -56,6 +56,7 @@ export type TaskStatus = 'draft' | 'queued' | 'running' | 'review' | 'done' | 'f
 export interface FeatureInfo {
   id: string;
   projectId: string;
+  projectName: string | null;
   title: string;
   summary: string;
   createdAt: number;

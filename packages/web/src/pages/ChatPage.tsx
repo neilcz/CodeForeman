@@ -288,7 +288,7 @@ export default function ChatPage() {
               <Space>
                 {active.projectId && (
                   <>
-                    <Button size="small" icon={<BulbOutlined />} onClick={() => setIdeaOpen(true)}>存为想法</Button>
+                    <Button size="small" icon={<BulbOutlined />} onClick={() => setIdeaOpen(true)}>存为计划</Button>
                     <Button size="small" icon={<FolderAddOutlined />} onClick={() => setArchiveOpen(true)}>归档</Button>
                   </>
                 )}
@@ -336,9 +336,9 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* 存为想法 */}
+      {/* 存为计划 */}
       <Modal
-        title="存为想法"
+        title="存为计划"
         open={ideaOpen}
         onCancel={() => setIdeaOpen(false)}
         onOk={() => ideaForm.submit()}
@@ -356,7 +356,7 @@ export default function ChatPage() {
             });
             setIdeaOpen(false);
             ideaForm.resetFields();
-            message.success('已加入想法队列');
+            message.success('已加入计划队列');
           }}
         >
           <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>

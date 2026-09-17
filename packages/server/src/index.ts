@@ -342,10 +342,12 @@ app.post('/api/tasks/:id/fail', async (req, reply) => {
 // ---------- 功能演进 ----------
 
 app.get('/api/features', async (req, reply) => {
-  const { projectId } = req.query as { projectId: string };
-  if (!projectId) return [];
-  if (!projects.canAccess(req.user!, projectId)) return reply.code(403).send({ error: '无权访问该项目' });
-  return features.listFeatures(projectId);
+  const { projectId } = req.query as { projectId?: string };
+  // 不传 projectId → 返回所有可见项目的功能
+  if (projectId && !projects.canAccess(req.user!, projectId)) {
+    return reply.code(403).send({ error: '无权访问该项目' });
+  }
+  return features.listFeaturesForUser(req.user!, projectId || undefined);
 });
 
 app.post('/api/features', async (req, reply) => {

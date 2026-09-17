@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { App, Button, Card, Checkbox, Empty, Form, Input, List, Popconfirm, Select, Space, Tag, Typography } from 'antd';
-import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, BranchesOutlined } from '@ant-design/icons';
+import { App, Button, Card, Checkbox, Empty, Form, Input, List, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
+import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, BranchesOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ProjectInfo, TaskInfo, TaskStatus } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage } from '../ws';
@@ -26,19 +26,31 @@ const STATUS_COLOR: Record<TaskStatus, string> = {
   conflict: 'error',
 };
 
+interface DraftValues {
+  projectId?: string;
+  title?: string;
+  description?: string;
+  autoMerge?: boolean;
+}
+
 export default function BacklogPage() {
   const [taskList, setTaskList] = useState<TaskInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [search, setSearch] = useState('');
+  const [filterProjectId, setFilterProjectId] = useState('');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [username, setUsername] = useState('');
   const { message } = App.useApp();
   const [form] = Form.useForm();
   const navigate = useNavigate();
 
+  // 草稿缓存按账号隔离
+  const draftKey = `cf_task_draft_${username}`;
+
   useEffect(() => {
     api.get<TaskInfo[]>('/api/tasks').then(setTaskList);
-    api.get<ProjectInfo[]>('/api/projects').then((ps) => {
-      setProjects(ps);
-      if (ps.length > 0) form.setFieldValue('projectId', ps[0].id);
-    });
+    api.get<ProjectInfo[]>('/api/projects').then(setProjects);
+    api.get<{ username: string }>('/api/auth/me').then((me) => setUsername(me.username));
   }, []);
 
   // 任务状态变化实时刷新
@@ -54,6 +66,25 @@ export default function BacklogPage() {
     }
   }), []);
 
+  const openModal = () => {
+    // 恢复上次未提交的草稿（仅当前账号）
+    try {
+      const draft = JSON.parse(localStorage.getItem(draftKey) ?? 'null') as DraftValues | null;
+      form.setFieldsValue(draft ?? { autoMerge: true });
+    } catch {
+      form.setFieldsValue({ autoMerge: true });
+    }
+    setModalOpen(true);
+  };
+
+  const saveDraft = () => {
+    if (!username) return;
+    const values = form.getFieldsValue() as DraftValues;
+    const empty = !values.title?.trim() && !values.description?.trim();
+    if (empty) localStorage.removeItem(draftKey);
+    else localStorage.setItem(draftKey, JSON.stringify(values));
+  };
+
   const create = async (v: { projectId: string; title: string; description?: string; autoMerge?: boolean }) => {
     try {
       const t = await api.post<TaskInfo>('/api/tasks', {
@@ -63,7 +94,10 @@ export default function BacklogPage() {
         autoMerge: v.autoMerge ?? true,
       });
       setTaskList((l) => [t, ...l]);
-      form.setFieldsValue({ title: '', description: '' });
+      // 提交成功 → 清空草稿
+      localStorage.removeItem(draftKey);
+      form.resetFields();
+      setModalOpen(false);
       message.success('已加入队列');
     } catch (e) {
       message.error((e as Error).message);
@@ -83,35 +117,43 @@ export default function BacklogPage() {
     setTaskList((l) => l.filter((x) => x.id !== t.id));
   };
 
+  const filtered = useMemo(() => {
+    const kw = search.trim().toLowerCase();
+    return taskList.filter((t) => {
+      if (filterProjectId && t.projectId !== filterProjectId) return false;
+      if (kw && !t.title.toLowerCase().includes(kw) && !t.description.toLowerCase().includes(kw)) return false;
+      return true;
+    });
+  }, [taskList, search, filterProjectId]);
+
   return (
     <div className="page-content">
-      <Typography.Title level={4}>想法 / 计划</Typography.Title>
+      <Space style={{ marginBottom: 16, width: '100%', justifyContent: 'space-between' }} wrap>
+        <Typography.Title level={4} style={{ margin: 0 }}>计划</Typography.Title>
+        <Space wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="搜索标题 / 描述"
+            style={{ width: 200 }}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <Select
+            style={{ minWidth: 160 }}
+            value={filterProjectId}
+            options={[{ value: '', label: '所有项目' }, ...projects.map((p) => ({ value: p.id, label: p.name }))]}
+            onChange={setFilterProjectId}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={openModal}>添加计划</Button>
+        </Space>
+      </Space>
 
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <Form form={form} layout="vertical" onFinish={create} initialValues={{ autoMerge: true }}>
-          <Form.Item name="projectId" rules={[{ required: true, message: '请选择项目' }]} style={{ marginBottom: 8 }}>
-            <Select options={projects.map((p) => ({ value: p.id, label: p.name }))} placeholder="选择项目" />
-          </Form.Item>
-          <Form.Item name="title" rules={[{ required: true, message: '请输入标题' }]} style={{ marginBottom: 8 }}>
-            <Input placeholder="标题（一句话说清要做什么）" />
-          </Form.Item>
-          <Form.Item name="description" style={{ marginBottom: 8 }}>
-            <Input.TextArea rows={3} placeholder="详细描述（可选，越具体 Claude 做得越准）" />
-          </Form.Item>
-          <Space>
-            <Form.Item name="autoMerge" valuePropName="checked" noStyle>
-              <Checkbox>验收后自动合并回主分支并删除任务分支</Checkbox>
-            </Form.Item>
-            <Button type="primary" htmlType="submit">加入队列</Button>
-          </Space>
-        </Form>
-      </Card>
-
-      {taskList.length === 0 ? (
-        <Empty description="队列是空的，记下第一个想法吧" />
+      {filtered.length === 0 ? (
+        <Empty description={search || filterProjectId ? '没有匹配的计划' : '队列是空的，记下第一个计划吧'} />
       ) : (
         <List
-          dataSource={taskList}
+          dataSource={filtered}
           renderItem={(t) => (
             <Card
               size="small"
@@ -142,7 +184,8 @@ export default function BacklogPage() {
                     执行
                   </Button>
                 )}
-                {(t.status === 'review' || t.status === 'running') && t.sessionId && (
+                {/* 只要有关联会话就允许打开（含 failed/review，方便排查） */}
+                {t.sessionId && t.status !== 'draft' && t.status !== 'queued' && (
                   <Button size="small" icon={<CommentOutlined />} onClick={() => navigate(`/chat/${t.sessionId}`)}>
                     查看会话
                   </Button>
@@ -152,8 +195,9 @@ export default function BacklogPage() {
                     验收{t.autoMerge ? '并合并' : '（保留分支）'}
                   </Button>
                 )}
-                {['draft', 'queued', 'failed', 'conflict'].includes(t.status) && (
-                  <Popconfirm title={`删除任务「${t.title}」？`} onConfirm={() => remove(t)}>
+                {/* 除执行中外都可删除（review 也可放弃） */}
+                {t.status !== 'running' && (
+                  <Popconfirm title={`删除计划「${t.title}」？`} onConfirm={() => remove(t)}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />}>删除</Button>
                   </Popconfirm>
                 )}
@@ -167,6 +211,36 @@ export default function BacklogPage() {
           )}
         />
       )}
+
+      <Modal
+        title="添加计划"
+        open={modalOpen}
+        onCancel={() => { saveDraft(); setModalOpen(false); }}
+        onOk={() => form.submit()}
+        okText="加入队列"
+        destroyOnHidden={false}
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={create}
+          initialValues={{ autoMerge: true }}
+          onValuesChange={saveDraft}
+        >
+          <Form.Item name="projectId" label="项目" rules={[{ required: true, message: '请选择项目' }]}>
+            <Select options={projects.map((p) => ({ value: p.id, label: p.name }))} placeholder="选择项目" />
+          </Form.Item>
+          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
+            <Input placeholder="一句话说清要做什么" />
+          </Form.Item>
+          <Form.Item name="description" label="详细描述（可选）">
+            <Input.TextArea rows={4} placeholder="越具体 Claude 做得越准" />
+          </Form.Item>
+          <Form.Item name="autoMerge" valuePropName="checked" noStyle>
+            <Checkbox>验收后自动合并回主分支并删除任务分支</Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

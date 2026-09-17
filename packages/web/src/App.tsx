@@ -52,7 +52,7 @@ export default function App() {
   const menuItems = [
     { key: '/projects', label: '项目' },
     { key: '/chat', label: '会话' },
-    { key: '/backlog', label: '想法' },
+    { key: '/backlog', label: '计划' },
     { key: '/features', label: '功能' },
     ...(me?.role === 'admin' ? [{ key: '/users', label: '用户' }] : []),
   ];

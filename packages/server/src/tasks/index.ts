@@ -170,7 +170,7 @@ export async function completeTask(id: string): Promise<TaskInfo> {
   await git.commitAll(project.path, `feat: ${task.title}`);
 
   if (!task.autoMerge) {
-    setStatus(id, 'done');
+    setStatus(id, 'done', { error: null });
     autoArchiveTask(id).catch(() => {});
     return getTask(id)!;
   }
@@ -188,7 +188,7 @@ export async function completeTask(id: string): Promise<TaskInfo> {
   }
   const mergeCommit = await git.headCommit(project.path);
   await git.deleteBranch(project.path, branch).catch(() => {});
-  setStatus(id, 'done', { merge_commit: mergeCommit });
+  setStatus(id, 'done', { merge_commit: mergeCommit, error: null });
   // 异步归档到功能演进（生成摘要要走一次 Claude 调用，不阻塞验收响应）
   autoArchiveTask(id).catch(() => {});
   return getTask(id)!;
