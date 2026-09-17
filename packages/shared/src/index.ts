@@ -12,6 +12,8 @@ export interface ProjectInfo {
   gitUrl: string | null;
   ownerId: string | null;
   visibility: 'private' | 'public';
+  /** true=本工具创建（删除时可连带删文件）；false=扫描/纳管（绝不删文件） */
+  managed: boolean;
   createdAt: number;
 }
 

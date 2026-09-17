@@ -97,6 +97,10 @@ const migrations: string[] = [
   ALTER TABLE projects ADD COLUMN owner_id TEXT REFERENCES users(id);
   ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private';
   `,
+  // v6: 项目来源标记 —— managed=1 工具创建（可连带删文件）；0=扫描/纳管（绝不删文件）
+  `
+  ALTER TABLE projects ADD COLUMN managed INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export function migrate() {

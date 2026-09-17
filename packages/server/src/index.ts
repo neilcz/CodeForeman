@@ -24,6 +24,14 @@ declare module 'fastify' {
 
 auth.seedAdmin();
 
+// 启动时自动扫描项目根目录：每个子文件夹即一个项目（新发现的归 admin、私有）
+{
+  const { added } = projects.scanProjectsDir();
+  if (added.length > 0) {
+    console.log(`[CodeForeman] 目录扫描发现 ${added.length} 个新项目: ${added.map((p) => p.name).join(', ')}`);
+  }
+}
+
 // ---------- 崩溃恢复 ----------
 // 服务重启时，上次残留在 running 的会话/任务的进程已不存在：
 // 会话复位为 idle（随时可凭 claude_session_id resume）；任务转为 review 等人工确认结果
@@ -114,6 +122,23 @@ app.get('/api/health', async (): Promise<HealthStatus> => ({
 // ---------- 项目 ----------
 
 app.get('/api/projects', async (req) => projects.listProjects(req.user!));
+
+/** 手动触发目录扫描（仅 admin：项目根目录是服务器全局资源） */
+app.post('/api/projects/scan', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  const { added, skipped } = projects.scanProjectsDir();
+  return { added: added.length, skipped, projects: added };
+});
+
+/** 对未初始化的项目目录执行 git init */
+app.post('/api/projects/:id/git-init', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!projects.canAccess(req.user!, id)) return reply.code(403).send({ error: '无权访问该项目' });
+  const project = projects.getProject(id)!;
+  if (await git.isRepo(project.path)) return { ok: true, already: true };
+  await projects.gitInit(id);
+  return { ok: true };
+});
 
 app.post('/api/projects', async (req, reply) => {
   const body = (req.body ?? {}) as { name?: string; gitUrl?: string; existingPath?: string; visibility?: 'private' | 'public' };

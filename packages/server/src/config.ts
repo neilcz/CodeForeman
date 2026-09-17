@@ -24,7 +24,17 @@ export const config = {
   permissionTimeoutMs: 120_000,
 } as const;
 
-export const projectsDir = path.join(config.dataDir, 'projects');
+/**
+ * 项目根目录：每个一级子文件夹即一个项目（自动发现）。
+ * 默认 <dataDir>/projects；可用 PROJECTS_DIR 指向任意已有目录，
+ * 如本机开发设 PROJECTS_DIR=/Users/neilcz/project，
+ * Docker 部署则把宿主机目录挂进容器并指向挂载点。
+ */
+export const projectsDir = process.env.PROJECTS_DIR ?? path.join(config.dataDir, 'projects');
 export const dbDir = path.join(config.dataDir, 'db');
+// 显式配置的 PROJECTS_DIR 不存在时直接报错（防手滑写错路径后静默建错目录）
+if (process.env.PROJECTS_DIR && !fs.existsSync(projectsDir)) {
+  throw new Error(`PROJECTS_DIR 不存在: ${projectsDir}`);
+}
 fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(dbDir, { recursive: true });

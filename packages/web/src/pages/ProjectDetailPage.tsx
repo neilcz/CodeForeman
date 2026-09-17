@@ -88,6 +88,17 @@ export default function ProjectDetailPage() {
             {gitState.changes.length > 0 && <span className="changes">{gitState.changes.length} 个改动</span>}
           </span>
         )}
+        {gitState && !gitState.isRepo && (
+          <button
+            className="link-btn"
+            onClick={async () => {
+              await api.post(`/api/projects/${id}/git-init`);
+              refreshGit();
+            }}
+          >
+            ⚠ 非 git 仓库，点击初始化
+          </button>
+        )}
         <span className="spacer" />
         {notice && <span className="notice">{notice}</span>}
         {dirty && <button className="save-btn" onClick={save}>保存</button>}

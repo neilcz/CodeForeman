@@ -14,13 +14,17 @@ services:
     environment:
       PORT: 3780
       DATA_DIR: /data
+      # 必须和下方挂载点一致：容器内看到的项目根目录
+      PROJECTS_DIR: /projects
     # Claude 凭证与模型配置（见 .env.example；支持 Kimi 等兼容端点或官方订阅）
     # 管理员初始密码也在 .env 里设置：ADMIN_PASSWORD=xxx（不设置则默认 admin/admin 并告警）
     env_file:
       - .env
     volumes:
-      # 代码在宿主机磁盘，git 管理；容器只是挂载使用
-      - ./data/projects:/data/projects
+      # 代码在宿主机磁盘，git 管理；容器只是挂载使用。
+      # 指向你的项目根目录（其下每个一级子文件夹会被自动发现为一个项目），
+      # 并在 .env 中设置 PROJECTS_DIR=/projects
+      - ./data/projects:/projects
       - codeforeman-db:/data/db
       # Claude 登录态持久化：容器重建后不必重新登录
       - claude-config:/root/.claude
