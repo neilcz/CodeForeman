@@ -135,6 +135,9 @@ export default function ChatPage() {
       case 'session.status':
         setSessions((s) => s.map((x) => (x.id === msg.sessionId ? { ...x, status: msg.status } : x)));
         break;
+      case 'session.updated':
+        setSessions((s) => s.map((x) => (x.id === msg.session.id ? msg.session : x)));
+        break;
       case 'claude.event':
         if (msg.sessionId === activeRef.current) {
           setEvents((e) => [...e, msg.event as StoredEvent]);

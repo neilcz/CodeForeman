@@ -116,6 +116,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: 'server.hello'; version: string; sessions: SessionInfo[] }
   | { type: 'session.created'; session: SessionInfo }
+  | { type: 'session.updated'; session: SessionInfo }
   | { type: 'session.status'; sessionId: string; status: SessionInfo['status'] }
   /** Claude 原始事件（SDK message），同时已落库 */
   | { type: 'claude.event'; sessionId: string; event: unknown }

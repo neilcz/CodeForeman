@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../db/index.js';
 import { ClaudeSession } from '../claude/session.js';
 import type { ServerMessage, SessionInfo } from '@codeforeman/shared';
@@ -189,6 +190,40 @@ export class SessionManager {
       .run(id, JSON.stringify(userEvent), Date.now());
     this.broadcast(id, { type: 'claude.event', sessionId: id, event: userEvent });
     session.send(text);
+
+    // 首次发言且无标题 → 异步让 Claude 概括需求生成标题
+    const info = this.get(id);
+    if (info && !info.title) this.autoTitle(id, text).catch(() => {});
+  }
+
+  /** 用首条用户需求生成会话标题：Claude 概括，失败降级为截断原文 */
+  private async autoTitle(id: string, firstMessage: string) {
+    const info = this.get(id);
+    if (!info || info.title) return; // 已被命名则不动
+
+    let title = firstMessage.replace(/\s+/g, ' ').trim().slice(0, 20);
+    try {
+      let text = '';
+      for await (const msg of query({
+        prompt: `把以下用户需求概括成 12 字以内的会话标题，只输出标题本身，不要标点：\n\n${firstMessage.slice(0, 500)}`,
+        options: { cwd: info.cwd },
+      })) {
+        const m = msg as { type: string; message?: { content?: { type: string; text?: string }[] } };
+        if (m.type === 'assistant') {
+          for (const b of m.message?.content ?? []) {
+            if (b.type === 'text' && b.text) text += b.text;
+          }
+        }
+        if (m.type === 'result') break;
+      }
+      const t = text.replace(/[\s"'「」.。:：]+/g, ' ').trim().slice(0, 24);
+      if (t) title = t;
+    } catch { /* 用降级标题 */ }
+
+    db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND title = ?')
+      .run(title, Date.now(), id, '');
+    const updated = this.get(id);
+    if (updated?.title) this.broadcast(id, { type: 'session.updated', session: updated });
   }
 
   respondPermission(sessionId: string, requestId: string, allow: boolean): boolean {
