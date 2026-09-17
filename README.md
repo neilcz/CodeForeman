@@ -14,33 +14,80 @@
 
 ## 本地开发
 
+### 前置要求
+
+- **Node.js ≥ 22**（`node -v` 确认；建议用 nvm/fnm 管理版本）
+- **Claude 凭证**（二选一）：
+  - A. 第三方兼容端点（如 Kimi）：需要 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
+  - B. 官方订阅：无需环境变量，后续在容器/本机执行 `claude login` 即可
+
+### 安装步骤
+
 ```bash
+# 1. 克隆仓库
+git clone <仓库地址> && cd CodeForeman
+
+# 2. 安装依赖（npm workspaces，一次装齐 shared/server/web 三个包）
 npm install
-cp .env.example .env   # 填入 Claude/Kimi 凭证，可设 ADMIN_PASSWORD / PROJECTS_DIR
+
+# 3. 配置环境变量
+cp .env.example .env
+# 编辑 .env，至少填：
+#   - ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN（Kimi 等兼容端点）
+#   - ADMIN_PASSWORD（管理员初始密码，不设置则为 admin/admin）
+# 可选：
+#   - ANTHROPIC_MODEL（模型名，按接入方要求设置；官方可留空）
+#   - PROJECTS_DIR（项目根目录，默认 data/projects）
+
+# 4. 构建共享包与产物
 npm run build
+
+# 5. 启动（两个终端分别运行，或一条 npm run dev 同时拉起）
 npm run dev:server     # 后端 http://localhost:3780
 npm run dev:web        # 前端 http://localhost:5173（代理 /api 和 /ws）
 ```
+
+### 验证
+
+浏览器打开 http://localhost:5173 ，用 `admin / $ADMIN_PASSWORD` 登录，能进项目列表即成功。
 
 `PROJECTS_DIR` 指定项目根目录（默认 `data/projects`），其下每个一级子文件夹启动时自动发现为项目；显式配置了不存在的路径会启动即报错，防止静默建错目录。项目页也可手动「扫描目录」。
 
 ## Docker 部署
 
+### 前置要求
+
+- **Docker** 与 **Docker Compose v2**（`docker compose version` 确认）
+
+### 部署步骤
+
 ```bash
-# 1. 准备代码目录（宿主机磁盘，git 管理）与配置
+# 1. 克隆仓库
+git clone <仓库地址> && cd CodeForeman
+
+# 2. 准备代码目录（宿主机磁盘，git 管理）与配置
 #    该目录下每个一级子文件夹会被自动发现为一个项目
 mkdir -p data/projects
 cp .env.example .env   # 填凭证 + ADMIN_PASSWORD
 #    代码目录不在默认位置时，在 .env 里设 HOST_PROJECTS_DIR=/path/to/projects
 
-# 2. 构建并启动（更新代码后也用这条，--build 保证重建镜像）
+# 3. 构建并启动（更新代码后也用这条，--build 保证重建镜像）
 docker compose up -d --build
 
-# 3. 若用官方订阅而非 apikey 类凭证：
+# 4. 若用官方订阅而非 apikey 类凭证：
 docker compose exec codeforeman claude login   # 登录态持久化在 claude-config 卷
 
 # 访问 http://<服务器>:3780，默认管理员 admin / $ADMIN_PASSWORD（未设置则为 admin）
 ```
+
+### 验证
+
+```bash
+docker compose ps        # 容器状态为 running
+docker compose logs -f   # 观察启动日志无报错
+```
+
+浏览器打开 http://<服务器>:3780 ，用 `admin / $ADMIN_PASSWORD` 登录即可。
 
 ## 运维
 
