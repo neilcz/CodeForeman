@@ -41,9 +41,9 @@ Thumbs.db
 *.swp
 *.swo
 
-# Claude Code / plan files
-CLAUDE.md
-claude.md
-.claude/
-PLAN.md
-plan.md
+# Claude Code / plan files（仅仓库根目录，docs/PLAN.md 是正式文档不忽略）
+/CLAUDE.md
+/claude.md
+/.claude/
+/PLAN.md
+/plan.md
