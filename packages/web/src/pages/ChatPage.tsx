@@ -6,7 +6,7 @@ import { Conversations, Bubble, Sender } from '@ant-design/x';
 import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined, LoadingOutlined, CloseCircleFilled, ToolOutlined } from '@ant-design/icons';
 import type { FeatureInfo, ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
 import { api } from '../api';
-import { onWsMessage, sendWs } from '../ws';
+import { onWsMessage, sendWs, subscribeSession, unsubscribeSession } from '../ws';
 
 // ---------- 类型 ----------
 
@@ -165,8 +165,8 @@ export default function ChatPage() {
     setPermission(null);
     api.get<{ event: StoredEvent }[]>(`/api/sessions/${sessionId}/messages`)
       .then((rows) => setEvents(rows.map((r) => r.event)));
-    sendWs({ type: 'session.subscribe', sessionId });
-    return () => sendWs({ type: 'session.unsubscribe', sessionId });
+    subscribeSession(sessionId);
+    return () => unsubscribeSession(sessionId);
   }, [sessionId]);
 
   useEffect(() => {

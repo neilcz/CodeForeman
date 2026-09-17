@@ -74,7 +74,14 @@ body {
 }
 /* flex 子项默认 min-width:auto，长内容会撑爆容器 —— 全链路约束 */
 .messages > * { min-width: 0; max-width: 100%; }
-.messages .ant-bubble .ant-bubble-content { white-space: pre-wrap; overflow-wrap: anywhere; max-width: min(85%, 720px); }
+/* 注意：不能用 overflow-wrap:anywhere —— 它会让 CJK 文本的 min-content 塌缩成单字宽，
+   flex 布局下气泡会被挤成竖排。break-word 只在必要时断行，不影响 min-content。 */
+.messages .ant-bubble .ant-bubble-content {
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: break-word;
+  max-width: min(85%, 720px);
+}
 
 .tool-block { align-self: flex-start; max-width: 85%; min-width: 0; }
 .tool-block pre, .perm-pre {

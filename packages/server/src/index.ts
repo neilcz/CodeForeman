@@ -225,6 +225,20 @@ app.get('/api/projects/:id/git', async (req, reply) => {
   };
 });
 
+/** 切换分支（有未提交改动且冲突时 git 会报错，原样返回给前端） */
+app.post('/api/projects/:id/git/checkout', async (req, reply) => {
+  const root = accessibleProjectPath(req, (req.params as { id: string }).id);
+  if (!root) return reply.code(403).send({ error: '无权访问该项目' });
+  const { branch } = req.body as { branch?: string };
+  if (!branch) return reply.code(400).send({ error: 'branch 必填' });
+  try {
+    await git.checkout(root, branch);
+    return { ok: true, branch: await git.currentBranch(root) };
+  } catch (err) {
+    return reply.code(400).send({ error: `切换失败：${(err as Error).message.split('\n')[0]}` });
+  }
+});
+
 // ---------- 会话 ----------
 
 app.get('/api/sessions', async (req) => sessionManager.list(req.user));

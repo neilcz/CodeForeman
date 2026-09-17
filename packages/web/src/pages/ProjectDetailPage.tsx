@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { App, Button, Space, Tag, Tree, Typography } from 'antd';
+import { App, Button, Select, Space, Tag, Tree, Typography } from 'antd';
 import type { TreeDataNode } from 'antd';
 import { CommentOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SaveOutlined, BranchesOutlined } from '@ant-design/icons';
 import type { FileNode, GitState, ProjectInfo, SessionInfo } from '@codeforeman/shared';
@@ -65,6 +65,29 @@ export default function ProjectDetailPage() {
     navigate(`/chat/${s.id}`);
   };
 
+  const switchBranch = async (branch: string) => {
+    if (!gitState?.isRepo || branch === gitState.branch) return;
+    try {
+      await api.post(`/api/projects/${id}/git/checkout`, { branch });
+      message.success(`已切换到 ${branch}`);
+      // 分支切换后文件树和打开的文件内容都可能变化
+      const res = await api.get<FileNode[]>(`/api/projects/${id}/tree`);
+      setTree(res);
+      if (openFile) {
+        try {
+          const f = await api.get<{ content: string }>(`/api/projects/${id}/file?path=${encodeURIComponent(openFile)}`);
+          setContent(f.content);
+          setDirty(false);
+        } catch {
+          setOpenFile(null); // 新分支上没有这个文件
+        }
+      }
+      refreshGit();
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
   if (!project) return <div className="page-content">加载中…</div>;
 
   return (
@@ -78,7 +101,16 @@ export default function ProjectDetailPage() {
         <Typography.Text strong>{project.name}</Typography.Text>
         {gitState?.isRepo && (
           <>
-            <Tag icon={<BranchesOutlined />} color="green">{gitState.branch}</Tag>
+            <Select
+              size="small"
+              variant="filled"
+              value={gitState.branch}
+              suffixIcon={<BranchesOutlined />}
+              style={{ minWidth: 140, maxWidth: 260 }}
+              options={gitState.branches.map((b) => ({ value: b, label: b }))}
+              onChange={switchBranch}
+              popupMatchSelectWidth={false}
+            />
             {gitState.changes.length > 0 && <Tag color="orange">{gitState.changes.length} 个改动</Tag>}
           </>
         )}

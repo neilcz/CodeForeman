@@ -10,8 +10,14 @@ export interface GitChange {
 }
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024 });
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, timeout: TIMEOUT, maxBuffer: 8 * 1024 * 1024 });
+    return stdout.trim();
+  } catch (err) {
+    // 抛出 git 的实际 stderr（如 "error: pathspec 'x' did not match"），而不是 Node 的包装信息
+    const e = err as { stderr?: string; message: string };
+    throw new Error(e.stderr?.trim() || e.message);
+  }
 }
 
 /** 静默判断是否为 git 仓库 */
