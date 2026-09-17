@@ -61,7 +61,7 @@ export default function App() {
   return (
     <Layout style={{ height: '100vh' }}>
       <Layout.Header style={{ display: 'flex', alignItems: 'center', gap: 24, borderBottom: '1px solid #303030' }}>
-        <Typography.Text strong style={{ color: '#22c55e', fontSize: 16, whiteSpace: 'nowrap' }}>
+        <Typography.Text strong style={{ color: '#fff', fontSize: 16, whiteSpace: 'nowrap' }}>
           CodeForeman
         </Typography.Text>
         <Menu

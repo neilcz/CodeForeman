@@ -46,16 +46,21 @@ body {
   background: #1f1f1f;
 }
 .conversations { flex: 1; overflow-y: auto; }
-/* 会话项文字顶边框：补足内边距与行距 */
+/* antd-x 会话项固定 40px 高，两行内容（标题+项目名）会顶到边缘；
+   放开高度、补齐内边距 */
 .conversations .ant-conversations-item {
+  height: auto;
+  min-height: 0;
   padding: 8px 12px;
-  margin-bottom: 2px;
+  align-items: flex-start;
 }
-.conversations .ant-conversations-item-selected {
-  background: rgba(34, 197, 94, 0.12);
+/* 选中态（类名是 -active 不是 -selected）：行业通用的科技蓝淡底 + 左侧强调条 */
+.conversations .ant-conversations-item-active {
+  background: rgba(22, 119, 255, 0.16);
+  box-shadow: inset 2px 0 0 #1677ff;
 }
-/* 用户气泡用主色绿，与整体一致 */
-.bubble-user { background: rgba(34, 197, 94, 0.25) !important; }
+/* 用户气泡跟随主色蓝 */
+.bubble-user { background: rgba(22, 119, 255, 0.28) !important; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .chat-header {
   padding: 8px 16px; border-bottom: 1px solid #303030;
