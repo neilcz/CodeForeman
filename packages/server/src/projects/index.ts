@@ -91,7 +91,21 @@ export function deleteProject(id: string, deleteFiles: boolean) {
   if (!project) throw new Error('project not found');
   // 扫描/纳管的目录（managed=0）绝不删文件；只有工具自己创建的才允许连带删除
   const managed = (db.prepare('SELECT managed FROM projects WHERE id = ?').get(id) as { managed: number } | undefined)?.managed;
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+
+  db.transaction(() => {
+    // 会话保留历史，解除项目绑定；任务、功能归档及其关联随项目删除
+    db.prepare('UPDATE sessions SET project_id = NULL WHERE project_id = ?').run(id);
+    db.prepare(
+      'DELETE FROM feature_items WHERE kind = ? AND ref_id IN (SELECT id FROM tasks WHERE project_id = ?)',
+    ).run('task', id);
+    db.prepare('DELETE FROM tasks WHERE project_id = ?').run(id);
+    db.prepare(
+      'DELETE FROM feature_items WHERE feature_id IN (SELECT id FROM features WHERE project_id = ?)',
+    ).run(id);
+    db.prepare('DELETE FROM features WHERE project_id = ?').run(id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  })();
+
   if (deleteFiles && managed === 1 && project.path.startsWith(projectsDir)) {
     fs.rmSync(project.path, { recursive: true, force: true });
   }

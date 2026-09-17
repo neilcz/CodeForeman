@@ -22,9 +22,9 @@ services:
       - .env
     volumes:
       # 代码在宿主机磁盘，git 管理；容器只是挂载使用。
-      # 指向你的项目根目录（其下每个一级子文件夹会被自动发现为一个项目），
-      # 并在 .env 中设置 PROJECTS_DIR=/projects
-      - ./data/projects:/projects
+      # 宿主机路径在 .env 的 HOST_PROJECTS_DIR 配置（默认 ./data/projects），
+      # 其下每个一级子文件夹会被自动发现为一个项目
+      - ${HOST_PROJECTS_DIR:-./data/projects}:/projects
       - codeforeman-db:/data/db
       # Claude 登录态持久化：容器重建后不必重新登录
       - claude-config:/root/.claude

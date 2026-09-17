@@ -164,8 +164,12 @@ app.delete('/api/projects/:id', async (req, reply) => {
     return reply.code(403).send({ error: '只有项目所有者或管理员可以删除' });
   }
   const { deleteFiles } = req.query as { deleteFiles?: string };
-  projects.deleteProject(id, deleteFiles === 'true');
-  return { ok: true };
+  try {
+    projects.deleteProject(id, deleteFiles === 'true');
+    return { ok: true };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
 });
 
 // ---------- 项目文件（需项目访问权） ----------
