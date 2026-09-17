@@ -1,71 +1,63 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { App, Button, Space, Tag, Tree, Typography } from 'antd';
+import type { TreeDataNode } from 'antd';
+import { CommentOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SaveOutlined, BranchesOutlined } from '@ant-design/icons';
 import type { FileNode, GitState, ProjectInfo, SessionInfo } from '@codeforeman/shared';
 import { api } from '../api';
 import { Editor, langOf, monaco } from '../monaco';
 
-function TreeNode({ node, depth, selected, onSelect }: {
-  node: FileNode; depth: number; selected: string | null; onSelect: (p: string) => void;
-}) {
-  const [open, setOpen] = useState(depth < 1);
-  if (node.type === 'dir') {
-    return (
-      <div>
-        <div className="tree-row" style={{ paddingLeft: depth * 14 + 8 }} onClick={() => setOpen(!open)}>
-          <span className="tree-icon">{open ? '▾' : '▸'}</span> {node.name}
-        </div>
-        {open && node.children?.map((c) => (
-          <TreeNode key={c.path} node={c} depth={depth + 1} selected={selected} onSelect={onSelect} />
-        ))}
-      </div>
-    );
-  }
-  return (
-    <div
-      className={`tree-row file ${selected === node.path ? 'selected' : ''}`}
-      style={{ paddingLeft: depth * 14 + 8 }}
-      onClick={() => onSelect(node.path)}
-    >
-      <span className="tree-icon">·</span> {node.name}
-    </div>
-  );
+function toTreeData(nodes: FileNode[]): TreeDataNode[] {
+  return nodes.map((n) => ({
+    key: n.path,
+    title: n.name,
+    isLeaf: n.type === 'file',
+    children: n.type === 'dir' ? toTreeData(n.children ?? []) : undefined,
+  }));
 }
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { message } = App.useApp();
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [tree, setTree] = useState<FileNode[]>([]);
   const [gitState, setGitState] = useState<GitState | { isRepo: false } | null>(null);
   const [openFile, setOpenFile] = useState<string | null>(null);
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [notice, setNotice] = useState('');
   const [treeOpen, setTreeOpen] = useState(true);
+
+  const refreshGit = () => id && api.get<GitState | { isRepo: false }>(`/api/projects/${id}/git`).then(setGitState);
 
   useEffect(() => {
     if (!id) return;
     api.get<ProjectInfo[]>('/api/projects').then((ps) => setProject(ps.find((p) => p.id === id) ?? null));
     api.get<FileNode[]>(`/api/projects/${id}/tree`).then(setTree);
-    api.get<GitState | { isRepo: false }>(`/api/projects/${id}/git`).then(setGitState);
+    refreshGit();
   }, [id]);
+
+  const treeData = useMemo(() => toTreeData(tree), [tree]);
 
   const openPath = async (p: string) => {
     if (dirty && !confirm('当前文件有未保存修改，切换将丢弃，继续？')) return;
-    const res = await api.get<{ content: string }>(`/api/projects/${id}/file?path=${encodeURIComponent(p)}`);
-    setOpenFile(p);
-    setContent(res.content);
-    setDirty(false);
-    if (window.innerWidth <= 768) setTreeOpen(false);
+    try {
+      const res = await api.get<{ content: string }>(`/api/projects/${id}/file?path=${encodeURIComponent(p)}`);
+      setOpenFile(p);
+      setContent(res.content);
+      setDirty(false);
+      if (window.innerWidth <= 768) setTreeOpen(false);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
   };
 
   const save = async () => {
     if (!openFile) return;
     await api.put(`/api/projects/${id}/file`, { path: openFile, content });
     setDirty(false);
-    setNotice('已保存');
-    setTimeout(() => setNotice(''), 1500);
-    api.get<GitState | { isRepo: false }>(`/api/projects/${id}/git`).then(setGitState);
+    message.success('已保存');
+    refreshGit();
   };
 
   const startChat = async () => {
@@ -73,43 +65,52 @@ export default function ProjectDetailPage() {
     navigate(`/chat/${s.id}`);
   };
 
-  const refreshGit = () => api.get<GitState | { isRepo: false }>(`/api/projects/${id}/git`).then(setGitState);
-
   if (!project) return <div className="page-content">加载中…</div>;
 
   return (
     <div className="project-detail">
-      <header className="pd-header">
-        <button className="tree-toggle" onClick={() => setTreeOpen(!treeOpen)}>☰</button>
-        <b>{project.name}</b>
+      <div className="pd-header">
+        <Button
+          type="text"
+          icon={treeOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+          onClick={() => setTreeOpen(!treeOpen)}
+        />
+        <Typography.Text strong>{project.name}</Typography.Text>
         {gitState?.isRepo && (
-          <span className="git-bar">
-            <span className="branch">⎇ {gitState.branch}</span>
-            {gitState.changes.length > 0 && <span className="changes">{gitState.changes.length} 个改动</span>}
-          </span>
+          <>
+            <Tag icon={<BranchesOutlined />} color="green">{gitState.branch}</Tag>
+            {gitState.changes.length > 0 && <Tag color="orange">{gitState.changes.length} 个改动</Tag>}
+          </>
         )}
         {gitState && !gitState.isRepo && (
-          <button
-            className="link-btn"
-            onClick={async () => {
-              await api.post(`/api/projects/${id}/git-init`);
-              refreshGit();
-            }}
+          <Button
+            size="small"
+            onClick={async () => { await api.post(`/api/projects/${id}/git-init`); refreshGit(); }}
           >
-            ⚠ 非 git 仓库，点击初始化
-          </button>
+            非 git 仓库，点击初始化
+          </Button>
         )}
         <span className="spacer" />
-        {notice && <span className="notice">{notice}</span>}
-        {dirty && <button className="save-btn" onClick={save}>保存</button>}
-        <button className="chat-btn" onClick={startChat}>💬 对话</button>
-      </header>
+        <Space>
+          {dirty && <Button type="primary" size="small" icon={<SaveOutlined />} onClick={save}>保存</Button>}
+          <Button size="small" icon={<CommentOutlined />} onClick={startChat}>对话</Button>
+        </Space>
+      </div>
+
       <div className="pd-body">
         {treeOpen && (
           <div className="file-tree">
-            {tree.map((n) => (
-              <TreeNode key={n.path} node={n} depth={0} selected={openFile} onSelect={openPath} />
-            ))}
+            <Tree
+              treeData={treeData}
+              selectedKeys={openFile ? [openFile] : []}
+              defaultExpandedKeys={tree.filter((n) => n.type === 'dir').slice(0, 3).map((n) => n.path)}
+              onSelect={(keys, info) => {
+                const key = keys[0] as string | undefined;
+                if (key && info.node.isLeaf) openPath(key);
+              }}
+              showIcon={false}
+              blockNode
+            />
           </div>
         )}
         <div className="editor-area">
@@ -130,13 +131,18 @@ export default function ProjectDetailPage() {
           )}
         </div>
       </div>
+
       {gitState?.isRepo && gitState.changes.length > 0 && (
-        <footer className="pd-git-footer" onClick={refreshGit} title="点击刷新">
+        <div className="pd-git-footer" onClick={refreshGit} title="点击刷新">
           {gitState.changes.slice(0, 8).map((c) => (
-            <span key={c.path} className="git-change">{c.status} {c.path}</span>
+            <Typography.Text key={c.path} type="secondary" style={{ fontSize: 12 }}>
+              {c.status} {c.path}
+            </Typography.Text>
           ))}
-          {gitState.changes.length > 8 && <span>…共 {gitState.changes.length} 项</span>}
-        </footer>
+          {gitState.changes.length > 8 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>…共 {gitState.changes.length} 项</Typography.Text>
+          )}
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Layout, Menu, Dropdown, Avatar, Space, Typography } from 'antd';
+import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import ChatPage from './pages/ChatPage';
@@ -19,6 +21,7 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const loggedIn = !!getToken();
 
   useEffect(() => {
@@ -43,23 +46,44 @@ export default function App() {
   const logout = async () => {
     await api.post('/api/auth/logout').catch(() => {});
     setToken(null);
-    location.href = '/login';
+    window.location.href = '/login';
   };
 
+  const menuItems = [
+    { key: '/projects', label: '项目' },
+    { key: '/chat', label: '会话' },
+    { key: '/backlog', label: '想法' },
+    { key: '/features', label: '功能' },
+    ...(me?.role === 'admin' ? [{ key: '/users', label: '用户' }] : []),
+  ];
+  const selectedKey = '/' + (location.pathname.split('/')[1] || 'projects');
+
   return (
-    <div className="app">
-      <nav className="topnav">
-        <span className="logo">CodeForeman</span>
-        <NavLink to="/projects">项目</NavLink>
-        <NavLink to="/chat">会话</NavLink>
-        <NavLink to="/backlog">想法</NavLink>
-        <NavLink to="/features">功能</NavLink>
-        <span className="spacer" />
-        {me?.role === 'admin' && <NavLink to="/users">用户</NavLink>}
-        <span className="me">{me?.username}</span>
-        <button className="logout-btn" onClick={logout}>退出</button>
-      </nav>
-      <div className="page">
+    <Layout style={{ height: '100vh' }}>
+      <Layout.Header style={{ display: 'flex', alignItems: 'center', padding: '0 16px', gap: 24 }}>
+        <Typography.Text strong style={{ color: '#fff', fontSize: 16, whiteSpace: 'nowrap' }}>
+          CodeForeman
+        </Typography.Text>
+        <Menu
+          theme="dark"
+          mode="horizontal"
+          selectedKeys={[selectedKey]}
+          items={menuItems}
+          onClick={({ key }) => navigate(key)}
+          style={{ flex: 1, minWidth: 0 }}
+        />
+        <Dropdown
+          menu={{
+            items: [{ key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: logout }],
+          }}
+        >
+          <Space style={{ cursor: 'pointer', color: '#fff' }}>
+            <Avatar size="small" icon={<UserOutlined />} />
+            <span>{me?.username}</span>
+          </Space>
+        </Dropdown>
+      </Layout.Header>
+      <Layout.Content style={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectsPage />} />
@@ -71,7 +95,7 @@ export default function App() {
           <Route path="/users" element={<UsersPage />} />
           <Route path="*" element={<Navigate to="/projects" replace />} />
         </Routes>
-      </div>
-    </div>
+      </Layout.Content>
+    </Layout>
   );
 }

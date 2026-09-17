@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Button, Card, Form, Input, Typography } from 'antd';
 import { api, setToken } from '../api';
 
 interface LoginRes {
@@ -8,18 +9,15 @@ interface LoginRes {
 }
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const navigate = useNavigate();
 
-  const submit = async () => {
-    if (loading) return;
+  const submit = async (values: { username: string; password: string }) => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.post<LoginRes>('/api/auth/login', { username, password });
+      const res = await api.post<LoginRes>('/api/auth/login', values);
       setToken(res.token);
       navigate('/projects');
       location.reload(); // 重建带 token 的 WS 连接
@@ -31,28 +29,28 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <h1>CodeForeman</h1>
-        <p className="login-sub">服务端代码 Agent 管理平台</p>
-        <input
-          placeholder="用户名"
-          value={username}
-          autoFocus
-          onChange={(e) => setUsername(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-        />
-        <input
-          type="password"
-          placeholder="密码"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-        />
-        {error && <div className="error">{error}</div>}
-        <button onClick={submit} disabled={loading || !username || !password}>
-          {loading ? '登录中…' : '登录'}
-        </button>
-      </div>
+      <Card style={{ width: 360 }}>
+        <Typography.Title level={3} style={{ textAlign: 'center', marginBottom: 4 }}>
+          CodeForeman
+        </Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ textAlign: 'center' }}>
+          服务端代码 Agent 管理平台
+        </Typography.Paragraph>
+        <Form layout="vertical" onFinish={submit} requiredMark={false}>
+          <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+            <Input placeholder="用户名" autoFocus size="large" />
+          </Form.Item>
+          <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+            <Input.Password placeholder="密码" size="large" />
+          </Form.Item>
+          {error && <Typography.Text type="danger">{error}</Typography.Text>}
+          <Form.Item style={{ marginTop: 12, marginBottom: 0 }}>
+            <Button type="primary" htmlType="submit" block size="large" loading={loading}>
+              登录
+            </Button>
+          </Form.Item>
+        </Form>
+      </Card>
     </div>
   );
 }

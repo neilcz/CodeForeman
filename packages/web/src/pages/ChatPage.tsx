@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import type { ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
+import { App, Alert, Button, Divider, Form, Input, Modal, Select, Space, Tag, Typography } from 'antd';
+import type { FormInstance } from 'antd';
+import { Conversations, Bubble, Sender } from '@ant-design/x';
+import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined } from '@ant-design/icons';
+import type { FeatureInfo, ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage, sendWs } from '../ws';
 
@@ -23,28 +27,36 @@ interface ContentBlock {
 
 interface StoredEvent {
   type: string;
-  session_id?: string;
+  subtype?: string;
   message?: { role?: string; content?: string | ContentBlock[] };
   duration_ms?: number;
   total_cost_usd?: number;
-  subtype?: string;
   [k: string]: unknown;
 }
 
 // ---------- 事件渲染 ----------
 
+function ToolUseView({ name, input }: { name?: string; input: unknown }) {
+  return (
+    <details className="tool-block">
+      <summary><Tag color="blue">🔧 {name}</Tag></summary>
+      <pre>{JSON.stringify(input, null, 2)?.slice(0, 2000)}</pre>
+    </details>
+  );
+}
+
 function EventView({ event }: { event: StoredEvent }) {
   if (event.type === 'user') {
     const content = event.message?.content;
     if (typeof content === 'string') {
-      return <div className="msg user"><div className="bubble">{content}</div></div>;
+      return <Bubble content={content} placement="end" classNames={{ content: 'bubble-user' }} />;
     }
     if (Array.isArray(content)) {
       const results = content.filter((b) => b.type === 'tool_result');
       if (results.length === 0) return null;
       return (
-        <details className="tool-result">
-          <summary>工具结果 ×{results.length}</summary>
+        <details className="tool-block tool-result">
+          <summary><Tag>工具结果 ×{results.length}</Tag></summary>
           <pre>{results.map((b) => (typeof b.content === 'string' ? b.content : JSON.stringify(b.content, null, 2))).join('\n---\n').slice(0, 2000)}</pre>
         </details>
       );
@@ -55,36 +67,35 @@ function EventView({ event }: { event: StoredEvent }) {
   if (event.type === 'assistant') {
     const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
     return (
-      <div className="msg assistant">
+      <>
         {blocks.map((b, i) => {
           if (b.type === 'text' && b.text) {
-            return <div key={i} className="bubble text">{b.text}</div>;
+            return <Bubble key={i} content={b.text} placement="start" classNames={{ content: 'bubble-assistant' }} />;
           }
-          if (b.type === 'tool_use') {
-            return (
-              <details key={i} className="tool-use">
-                <summary>🔧 {b.name}</summary>
-                <pre>{JSON.stringify(b.input, null, 2)?.slice(0, 2000)}</pre>
-              </details>
-            );
-          }
+          if (b.type === 'tool_use') return <ToolUseView key={i} name={b.name} input={b.input} />;
           return null;
         })}
-      </div>
+      </>
     );
   }
 
   if (event.type === 'result') {
     const secs = event.duration_ms ? (event.duration_ms / 1000).toFixed(1) : '?';
-    return <div className="turn-done">—— 本轮结束 · {secs}s{event.total_cost_usd ? ` · $${event.total_cost_usd.toFixed(4)}` : ''} ——</div>;
+    return (
+      <Divider plain style={{ margin: '4px 0' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          本轮结束 · {secs}s{event.total_cost_usd ? ` · $${event.total_cost_usd.toFixed(4)}` : ''}
+        </Typography.Text>
+      </Divider>
+    );
   }
 
   if (event.type === 'system' && event.subtype === 'interrupted') {
-    return <div className="turn-done">—— ⛔ 已中断 ——</div>;
+    return <Divider plain style={{ margin: '4px 0' }}><Typography.Text type="danger" style={{ fontSize: 12 }}>⛔ 已中断</Typography.Text></Divider>;
   }
 
   if (event.type === 'error') {
-    return <div className="error">出错：{String(event.message?.content ?? '')}</div>;
+    return <Alert type="error" message={String(event.message?.content ?? '')} showIcon />;
   }
 
   return null;
@@ -95,13 +106,17 @@ function EventView({ event }: { event: StoredEvent }) {
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const { message } = App.useApp();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  // 项目筛选：'' = 所有项目；持久化到 localStorage
   const [filterProjectId, setFilterProjectId] = useState(() => localStorage.getItem('cf_chat_project') ?? '');
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [permission, setPermission] = useState<PermissionCard | null>(null);
   const [input, setInput] = useState('');
+  const [ideaOpen, setIdeaOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [ideaForm] = Form.useForm();
+  const [archiveForm] = Form.useForm();
   const bottomRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = sessionId ?? null;
@@ -111,7 +126,6 @@ export default function ChatPage() {
     api.get<ProjectInfo[]>('/api/projects').then(setProjects);
   }, []);
 
-  // WS 消息分发
   useEffect(() => onWsMessage((msg) => {
     switch (msg.type) {
       case 'session.status':
@@ -138,7 +152,6 @@ export default function ChatPage() {
     }
   }), []);
 
-  // 切换会话：拉历史 + 订阅
   useEffect(() => {
     if (!sessionId) return;
     setEvents([]);
@@ -169,23 +182,17 @@ export default function ChatPage() {
     navigate(`/chat/${s.id}`);
   };
 
-  const deleteSession = async (s: SessionInfo) => {
-    if (!confirm(`删除会话「${s.title || s.id.slice(0, 8)}」？历史消息将一并清除。`)) return;
-    await api.del(`/api/sessions/${s.id}`);
-    setSessions((prev) => prev.filter((x) => x.id !== s.id));
-    if (sessionId === s.id) navigate('/chat');
+  const deleteSession = async (id: string) => {
+    await api.del(`/api/sessions/${id}`);
+    setSessions((prev) => prev.filter((x) => x.id !== id));
+    if (sessionId === id) navigate('/chat');
+    message.success('会话已删除');
   };
 
-  const sendMessage = () => {
-    const text = input.trim();
-    if (!text || !sessionId) return;
-    sendWs({ type: 'chat.send', sessionId, text });
+  const sendMessage = (text: string) => {
+    if (!text.trim() || !sessionId) return;
+    sendWs({ type: 'chat.send', sessionId, text: text.trim() });
     setInput('');
-  };
-
-  const interrupt = () => {
-    if (!sessionId) return;
-    sendWs({ type: 'chat.interrupt', sessionId });
   };
 
   const respondPermission = (allow: boolean) => {
@@ -194,147 +201,226 @@ export default function ChatPage() {
     setPermission(null);
   };
 
-  // 把聊天中聊出的想法存进 Backlog
-  const saveAsTask = async () => {
-    if (!active?.projectId) return;
-    const title = prompt('想法标题（一句话）');
-    if (!title?.trim()) return;
-    const description = prompt('详细描述（可选）') ?? '';
-    await api.post('/api/tasks', {
-      projectId: active.projectId,
-      title: title.trim(),
-      description,
-      source: 'chat',
-    });
-    alert('已加入想法队列');
-  };
-
-  // 把当前会话归档到功能演进
-  const archiveToFeature = async () => {
-    if (!active?.projectId || !sessionId) return;
-    const list = await api.get<{ id: string; title: string }[]>(`/api/features?projectId=${active.projectId}`);
-    const options = list.map((f, i) => `${i + 1}. ${f.title}`).join('\n');
-    const answer = prompt(`归档到功能：\n${options}\n\n输入序号选择，或直接输入新功能名称`);
-    if (!answer?.trim()) return;
-    let featureId: string;
-    const idx = Number(answer);
-    if (Number.isInteger(idx) && idx >= 1 && idx <= list.length) {
-      featureId = list[idx - 1].id;
-    } else {
-      const created = await api.post<{ id: string }>('/api/features', { projectId: active.projectId, title: answer.trim() });
-      featureId = created.id;
-    }
-    await api.post(`/api/features/${featureId}/link`, { kind: 'session', refId: sessionId });
-    alert('已归档到功能演进');
-  };
+  const projectOptions = [
+    { value: '', label: '所有项目' },
+    ...projects.map((p) => ({ value: p.id, label: p.name })),
+  ];
 
   return (
     <div className="chat-page">
-      <aside className={`sidebar ${sessionId ? 'hidden-mobile' : ''}`}>
-        <div className="sidebar-title">会话</div>
-        <select
-          className="new-session-select"
+      <div className={`chat-sider ${sessionId ? 'hidden-mobile' : ''}`}>
+        <Select
+          style={{ width: '100%' }}
           value={filterProjectId}
-          onChange={(e) => changeFilter(e.target.value)}
-        >
-          <option value="">所有项目</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+          options={projectOptions}
+          onChange={changeFilter}
+          placeholder="按项目筛选"
+        />
         {filterProjectId ? (
-          // 已选中具体项目：一键在该项目下新建会话
-          <button className="new-session-btn" onClick={() => createSession(filterProjectId)}>
-            + 新会话（{projects.find((p) => p.id === filterProjectId)?.name}）
-          </button>
+          <Button type="primary" icon={<PlusOutlined />} block onClick={() => createSession(filterProjectId)}>
+            新会话（{projects.find((p) => p.id === filterProjectId)?.name}）
+          </Button>
         ) : (
-          // 所有项目视图：先选项目再建会话
-          <select
-            className="new-session-select"
-            value=""
-            onChange={(e) => e.target.value && createSession(e.target.value)}
-          >
-            <option value="">+ 在项目中新建会话…</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          <Select
+            style={{ width: '100%' }}
+            value={null}
+            placeholder="+ 在项目中新建会话…"
+            options={projects.map((p) => ({ value: p.id, label: p.name }))}
+            onChange={(v) => v && createSession(v)}
+          />
         )}
-        <div className="session-list">
-          {filteredSessions.map((s) => (
-            <div
-              key={s.id}
-              className={`session-item ${s.id === sessionId ? 'active' : ''}`}
-              onClick={() => navigate(`/chat/${s.id}`)}
-            >
-              <div className="session-main">
-                <span className="title">{s.title || `会话 ${s.id.slice(0, 8)}`}</span>
-                <span className="project-tag">{s.projectName ?? '未绑定'}</span>
+        <Conversations
+          className="conversations"
+          activeKey={sessionId}
+          onActiveChange={(id) => navigate(`/chat/${id}`)}
+          items={filteredSessions.map((s) => ({
+            key: s.id,
+            label: (
+              <div>
+                <div>{s.title || `会话 ${s.id.slice(0, 8)}`}</div>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {s.projectName ?? '未绑定'}{s.status === 'running' ? ' · ⏳ 进行中' : s.status === 'error' ? ' · ❌ 出错' : ''}
+                </Typography.Text>
               </div>
-              <span className={`status ${s.status}`}>{s.status === 'running' ? '⏳' : s.status === 'error' ? '❌' : ''}</span>
-              <button
-                className="session-del"
-                title="删除会话"
-                onClick={(e) => { e.stopPropagation(); deleteSession(s); }}
-              >🗑</button>
-            </div>
-          ))}
-          {filteredSessions.length === 0 && (
-            <div className="empty-tip">{filterProjectId ? '该项目还没有会话' : '还没有会话'}</div>
-          )}
-        </div>
-      </aside>
+            ),
+          }))}
+          menu={(conv) => ({
+            items: [{ key: 'del', label: '删除会话', icon: <DeleteOutlined />, danger: true }],
+            onClick: () => {
+              Modal.confirm({
+                title: '删除会话？',
+                content: '历史消息将一并清除，关联的任务不受影响。',
+                okButtonProps: { danger: true },
+                onOk: () => deleteSession(String(conv.key)),
+              });
+            },
+          })}
+        />
+      </div>
 
-      <main className="chat">
+      <div className="chat-main">
         {!active ? (
-          <div className="empty-tip">{sessionId ? '加载中…' : '选择左侧会话，或在项目中新建'}</div>
+          <div className="empty-tip">{sessionId ? '加载中…' : '选择左侧会话，或新建一个'}</div>
         ) : (
           <>
-            <header className="chat-header">
-              <button className="back-mobile" onClick={() => navigate('/chat')}>←</button>
-              <span>{active.title || `会话 ${active.id.slice(0, 8)}`}</span>
-              <span className="cwd">{active.projectName ?? active.cwd}</span>
+            <div className="chat-header">
+              <Button className="back-mobile" type="text" onClick={() => navigate('/chat')}>←</Button>
+              <Typography.Text strong>{active.title || `会话 ${active.id.slice(0, 8)}`}</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{active.projectName ?? active.cwd}</Typography.Text>
               <span className="spacer" />
-              {active.projectId && <button className="idea-btn" onClick={saveAsTask}>💡 存为想法</button>}
-              {active.projectId && <button className="idea-btn" onClick={archiveToFeature}>📁 归档</button>}
-            </header>
+              <Space>
+                {active.projectId && (
+                  <>
+                    <Button size="small" icon={<BulbOutlined />} onClick={() => setIdeaOpen(true)}>存为想法</Button>
+                    <Button size="small" icon={<FolderAddOutlined />} onClick={() => setArchiveOpen(true)}>归档</Button>
+                  </>
+                )}
+              </Space>
+            </div>
 
             <div className="messages">
               {events.map((e, i) => <EventView key={i} event={e} />)}
 
               {permission && (
-                <div className="permission-card">
-                  <div className="perm-title">⚠️ Claude 请求权限：<b>{permission.toolName}</b></div>
-                  <pre>{JSON.stringify(permission.input, null, 2)?.slice(0, 1000)}</pre>
-                  <div className="perm-actions">
-                    <button className="allow" onClick={() => respondPermission(true)}>允许</button>
-                    <button className="deny" onClick={() => respondPermission(false)}>拒绝</button>
-                  </div>
-                </div>
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={<>Claude 请求权限：<b>{permission.toolName}</b></>}
+                  description={<pre className="perm-pre">{JSON.stringify(permission.input, null, 2)?.slice(0, 1000)}</pre>}
+                  action={
+                    <Space direction="vertical">
+                      <Button size="small" type="primary" onClick={() => respondPermission(true)}>允许</Button>
+                      <Button size="small" onClick={() => respondPermission(false)}>拒绝</Button>
+                    </Space>
+                  }
+                />
               )}
-              {/* 运行指示器吸底，长对话里也能看到 Claude 还在工作 */}
               {active.status === 'running' && (
-                <div className="thinking sticky">
-                  Claude 正在工作…
-                  <button className="interrupt-btn" onClick={interrupt}>■ 中断</button>
+                <div className="thinking-bar">
+                  <Typography.Text type="secondary">Claude 正在工作…</Typography.Text>
+                  <Button size="small" danger icon={<StopOutlined />} onClick={() => sendWs({ type: 'chat.interrupt', sessionId })}>
+                    中断
+                  </Button>
                 </div>
               )}
               <div ref={bottomRef} />
             </div>
 
-            <div className="input-bar">
-              <textarea
+            <div className="sender-bar">
+              <Sender
                 value={input}
+                onChange={setInput}
+                onSubmit={sendMessage}
                 placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                  }
-                }}
+                loading={active.status === 'running'}
               />
-              <button onClick={sendMessage} disabled={!input.trim()}>发送</button>
             </div>
           </>
         )}
-      </main>
+      </div>
+
+      {/* 存为想法 */}
+      <Modal
+        title="存为想法"
+        open={ideaOpen}
+        onCancel={() => setIdeaOpen(false)}
+        onOk={() => ideaForm.submit()}
+        destroyOnHidden
+      >
+        <Form
+          form={ideaForm}
+          layout="vertical"
+          onFinish={async (v) => {
+            await api.post('/api/tasks', {
+              projectId: active?.projectId,
+              title: v.title.trim(),
+              description: v.description ?? '',
+              source: 'chat',
+            });
+            setIdeaOpen(false);
+            ideaForm.resetFields();
+            message.success('已加入想法队列');
+          }}
+        >
+          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
+            <Input placeholder="一句话说清要做什么" />
+          </Form.Item>
+          <Form.Item name="description" label="详细描述（可选）">
+            <Input.TextArea rows={3} placeholder="越具体 Claude 做得越准" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 归档到功能 */}
+      <ArchiveModal
+        open={archiveOpen}
+        sessionId={sessionId}
+        projectId={active?.projectId}
+        form={archiveForm}
+        onClose={() => setArchiveOpen(false)}
+      />
     </div>
+  );
+}
+
+// 归档弹窗独立组件，避免主组件过重
+function ArchiveModal({ open, sessionId, projectId, form, onClose }: {
+  open: boolean;
+  sessionId?: string;
+  projectId?: string | null;
+  form: FormInstance;
+  onClose: () => void;
+}) {
+  const { message } = App.useApp();
+  const [features, setFeatures] = useState<FeatureInfo[]>([]);
+
+  useEffect(() => {
+    if (open && projectId) {
+      api.get<FeatureInfo[]>(`/api/features?projectId=${projectId}`).then(setFeatures);
+    }
+  }, [open, projectId]);
+
+  return (
+    <Modal
+      title="归档到功能演进"
+      open={open}
+      onCancel={onClose}
+      onOk={() => form.submit()}
+      destroyOnHidden
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={async (v) => {
+          let featureId = v.featureId;
+          if (!featureId) {
+            const created = await api.post<{ id: string }>('/api/features', { projectId, title: v.newTitle.trim() });
+            featureId = created.id;
+          }
+          await api.post(`/api/features/${featureId}/link`, { kind: 'session', refId: sessionId });
+          onClose();
+          form.resetFields();
+          message.success('已归档到功能演进');
+        }}
+      >
+        <Form.Item name="featureId" label="选择已有功能">
+          <Select
+            allowClear
+            placeholder="选择一个功能，或在下面输入新功能名"
+            options={features.map((f) => ({ value: f.id, label: f.title }))}
+          />
+        </Form.Item>
+        <Form.Item
+          noStyle
+          shouldUpdate={(a, b) => a.featureId !== b.featureId}
+        >
+          {({ getFieldValue }) => !getFieldValue('featureId') && (
+            <Form.Item name="newTitle" label="新功能名称" rules={[{ required: true, message: '选择已有功能或输入新功能名' }]}>
+              <Input placeholder="如：用户登录模块" />
+            </Form.Item>
+          )}
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 }

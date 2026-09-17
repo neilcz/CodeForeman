@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Button, Card, Empty, Select, Space, Tag, Timeline, Typography } from 'antd';
 import type { FeatureInfo, ProjectInfo } from '@codeforeman/shared';
 import { api } from '../api';
 
@@ -26,42 +27,55 @@ export default function FeaturesPage() {
 
   return (
     <div className="page-content">
-      <div className="features-head">
-        <h2>功能演进</h2>
-        <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </div>
+      <Space style={{ marginBottom: 16 }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>功能演进</Typography.Title>
+        <Select
+          style={{ minWidth: 200 }}
+          value={projectId || undefined}
+          placeholder="选择项目"
+          options={projects.map((p) => ({ value: p.id, label: p.name }))}
+          onChange={setProjectId}
+        />
+      </Space>
 
-      <div className="feature-list">
-        {features.map((f) => (
-          <div key={f.id} className="feature-card">
-            <div className="feature-title">{f.title}</div>
-            {f.summary && <div className="feature-summary">{f.summary}</div>}
-            <div className="feature-timeline">
-              {f.items.map((item) => (
-                <div key={item.id} className="timeline-item">
-                  <span className="timeline-time">{formatTime(item.createdAt)}</span>
-                  <span className="timeline-kind">{item.kind === 'task' ? '🎯 任务' : '💬 会话'}</span>
-                  <span className="timeline-label">{item.label}</span>
-                  {item.firstPrompt && <span className="timeline-prompt">「{item.firstPrompt}」</span>}
-                  {item.mergeCommit && <span className="timeline-commit">⎇ {item.mergeCommit}</span>}
-                  {item.kind === 'session' && (
-                    <button className="link-btn" onClick={() => navigate(`/chat/${item.refId}`)}>查看</button>
-                  )}
-                </div>
-              ))}
-              {f.items.length === 0 && <div className="timeline-item empty">暂无迭代记录</div>}
-            </div>
-          </div>
-        ))}
-        {features.length === 0 && (
-          <div className="empty-tip">
+      {features.length === 0 ? (
+        <Empty description={
+          <>
             还没有功能归档。<br />
-            任务验收后会自动归档；也可以在会话页点「📁 归档」手动整理。
-          </div>
-        )}
-      </div>
+            <Typography.Text type="secondary">任务验收后会自动归档；也可以在会话页点「归档」手动整理。</Typography.Text>
+          </>
+        } />
+      ) : (
+        features.map((f) => (
+          <Card key={f.id} size="small" style={{ marginBottom: 12 }} title={f.title}>
+            {f.summary && (
+              <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>{f.summary}</Typography.Paragraph>
+            )}
+            <Timeline
+              items={f.items.length === 0
+                ? [{ children: <Typography.Text type="secondary">暂无迭代记录</Typography.Text> }]
+                : f.items.map((item) => ({
+                    children: (
+                      <Space wrap size={8}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item.createdAt)}</Typography.Text>
+                        <Tag>{item.kind === 'task' ? '🎯 任务' : '💬 会话'}</Tag>
+                        <span>{item.label}</span>
+                        {item.firstPrompt && (
+                          <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 300 }}>
+                            「{item.firstPrompt}」
+                          </Typography.Text>
+                        )}
+                        {item.mergeCommit && <Typography.Text style={{ fontSize: 12, color: '#4ade80' }}>⎇ {item.mergeCommit}</Typography.Text>}
+                        {item.kind === 'session' && (
+                          <Button size="small" type="link" onClick={() => navigate(`/chat/${item.refId}`)}>查看</Button>
+                        )}
+                      </Space>
+                    ),
+                  }))}
+            />
+          </Card>
+        ))
+      )}
     </div>
   );
 }
