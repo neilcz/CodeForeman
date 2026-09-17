@@ -188,6 +188,19 @@ export class SessionManager {
     return this.live.get(sessionId)?.respondPermission(requestId, allow) ?? false;
   }
 
+  /** 删除会话：杀掉进程（若在跑）、清空消息与功能归档关联 */
+  remove(id: string) {
+    this.closeSession(id);
+    db.transaction(() => {
+      db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
+      db.prepare("DELETE FROM feature_items WHERE kind = 'session' AND ref_id = ?").run(id);
+      // 任务保留，仅解除会话引用（任务的分支/commit 记录仍有效）
+      db.prepare('UPDATE tasks SET session_id = NULL WHERE session_id = ?').run(id);
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    })();
+    this.subscribers.delete(id);
+  }
+
   // ---------- 订阅 ----------
 
   subscribe(sessionId: string, listener: Listener) {

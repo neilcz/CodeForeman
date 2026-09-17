@@ -248,6 +248,17 @@ app.get('/api/sessions/:id/messages', async (req, reply) => {
   return sessionManager.history(id, after ? Number(after) : 0);
 });
 
+app.delete('/api/sessions/:id', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const session = sessionManager.get(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  if (session.projectId && !projects.canAccess(req.user!, session.projectId)) {
+    return reply.code(403).send({ error: '无权访问该会话' });
+  }
+  sessionManager.remove(id);
+  return { ok: true };
+});
+
 // ---------- 任务（Backlog） ----------
 
 app.get('/api/tasks', async (req) => {

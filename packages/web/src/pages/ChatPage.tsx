@@ -93,6 +93,8 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  // 项目筛选：'' = 所有项目；持久化到 localStorage
+  const [filterProjectId, setFilterProjectId] = useState(() => localStorage.getItem('cf_chat_project') ?? '');
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [permission, setPermission] = useState<PermissionCard | null>(null);
   const [input, setInput] = useState('');
@@ -148,11 +150,26 @@ export default function ChatPage() {
   }, [events, permission]);
 
   const active = sessions.find((s) => s.id === sessionId);
+  const filteredSessions = filterProjectId
+    ? sessions.filter((s) => s.projectId === filterProjectId)
+    : sessions;
+
+  const changeFilter = (pid: string) => {
+    setFilterProjectId(pid);
+    localStorage.setItem('cf_chat_project', pid);
+  };
 
   const createSession = async (projectId: string) => {
     const s = await api.post<SessionInfo>('/api/sessions', { projectId });
     setSessions((prev) => [s, ...prev]);
     navigate(`/chat/${s.id}`);
+  };
+
+  const deleteSession = async (s: SessionInfo) => {
+    if (!confirm(`删除会话「${s.title || s.id.slice(0, 8)}」？历史消息将一并清除。`)) return;
+    await api.del(`/api/sessions/${s.id}`);
+    setSessions((prev) => prev.filter((x) => x.id !== s.id));
+    if (sessionId === s.id) navigate('/chat');
   };
 
   const sendMessage = () => {
@@ -208,14 +225,30 @@ export default function ChatPage() {
         <div className="sidebar-title">会话</div>
         <select
           className="new-session-select"
-          value=""
-          onChange={(e) => e.target.value && createSession(e.target.value)}
+          value={filterProjectId}
+          onChange={(e) => changeFilter(e.target.value)}
         >
-          <option value="">+ 在项目中新建会话…</option>
+          <option value="">所有项目</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        {filterProjectId ? (
+          // 已选中具体项目：一键在该项目下新建会话
+          <button className="new-session-btn" onClick={() => createSession(filterProjectId)}>
+            + 新会话（{projects.find((p) => p.id === filterProjectId)?.name}）
+          </button>
+        ) : (
+          // 所有项目视图：先选项目再建会话
+          <select
+            className="new-session-select"
+            value=""
+            onChange={(e) => e.target.value && createSession(e.target.value)}
+          >
+            <option value="">+ 在项目中新建会话…</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        )}
         <div className="session-list">
-          {sessions.map((s) => (
+          {filteredSessions.map((s) => (
             <div
               key={s.id}
               className={`session-item ${s.id === sessionId ? 'active' : ''}`}
@@ -226,8 +259,16 @@ export default function ChatPage() {
                 <span className="project-tag">{s.projectName ?? '未绑定'}</span>
               </div>
               <span className={`status ${s.status}`}>{s.status === 'running' ? '⏳' : s.status === 'error' ? '❌' : ''}</span>
+              <button
+                className="session-del"
+                title="删除会话"
+                onClick={(e) => { e.stopPropagation(); deleteSession(s); }}
+              >🗑</button>
             </div>
           ))}
+          {filteredSessions.length === 0 && (
+            <div className="empty-tip">{filterProjectId ? '该项目还没有会话' : '还没有会话'}</div>
+          )}
         </div>
       </aside>
 
