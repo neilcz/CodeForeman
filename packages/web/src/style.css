@@ -129,15 +129,17 @@ body {
 .chat-header .cwd { color: #52525b; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .back-mobile { display: none; background: none; border: none; color: #a1a1aa; font-size: 18px; }
 
-.messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+/* flex 子项默认 min-width:auto，长内容会撑爆容器导致横向滚动 —— 全链路 min-width:0 */
+.messages > * { min-width: 0; max-width: 100%; }
 
-.msg { display: flex; flex-direction: column; gap: 6px; max-width: 85%; }
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 85%; min-width: 0; }
 .msg.user { align-self: flex-end; }
 .msg.assistant { align-self: flex-start; }
 .bubble {
   padding: 10px 14px; border-radius: 12px;
-  white-space: pre-wrap; word-break: break-word;
-  font-size: 14px; line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+  font-size: 14px; line-height: 1.6; max-width: 100%;
 }
 .msg.user .bubble { background: #3730a3; }
 .msg.assistant .bubble.text { background: #2b2c33; }
@@ -145,20 +147,33 @@ body {
 .tool-use, .tool-result {
   font-size: 12px; color: #a1a1aa;
   background: #232428; border-radius: 8px; padding: 6px 10px;
-  align-self: flex-start; max-width: 85%;
+  align-self: flex-start; max-width: 85%; min-width: 0;
 }
 .tool-use pre, .tool-result pre, .permission-card pre {
-  margin: 6px 0 0; overflow-x: auto; font-size: 11px; color: #71717a;
+  margin: 6px 0 0; font-size: 11px; color: #71717a;
+  /* 长 JSON/命令不再撑爆布局：自动换行 + 限高滚动 */
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 300px; overflow-y: auto; overflow-x: hidden;
 }
 
 .turn-done { text-align: center; color: #3f3f46; font-size: 12px; margin: 8px 0; }
-.thinking { color: #6366f1; font-size: 13px; padding: 4px 0; animation: pulse 1.5s infinite; }
+.thinking { color: #6366f1; font-size: 13px; padding: 4px 0; animation: pulse 1.5s infinite; display: flex; align-items: center; gap: 10px; }
+.thinking.sticky {
+  position: sticky; bottom: 0; z-index: 5;
+  background: #1e1f24; padding: 8px 4px;
+}
 @keyframes pulse { 50% { opacity: 0.4; } }
+.interrupt-btn {
+  padding: 2px 12px; border-radius: 6px; border: 1px solid #7f1d1d;
+  background: transparent; color: #f87171; cursor: pointer; font-size: 12px;
+}
+.interrupt-btn:hover { background: #7f1d1d; color: #fff; }
 
 .permission-card {
   align-self: stretch;
   border: 1px solid #854d0e; background: #292419;
   border-radius: 12px; padding: 12px 14px;
+  min-width: 0; max-width: 100%;
 }
 .perm-title { font-size: 14px; margin-bottom: 4px; }
 .perm-actions { display: flex; gap: 10px; margin-top: 10px; }

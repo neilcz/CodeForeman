@@ -422,6 +422,10 @@ app.get('/ws', { websocket: true }, (socket: WebSocket, req) => {
           send({ type: 'chat.error', sessionId: msg.sessionId, error: (err as Error).message });
         }
         break;
+      case 'chat.interrupt':
+        if (!sessionAllowed(msg.sessionId)) return;
+        sessionManager.interrupt(msg.sessionId);
+        break;
       case 'permission.respond':
         if (!sessionAllowed(msg.sessionId)) return;
         sessionManager.respondPermission(msg.sessionId, msg.requestId, msg.allow);

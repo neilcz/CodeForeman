@@ -128,9 +128,10 @@ export class SessionManager {
       {
         onEvent: (event) => {
           this.lastActivity.set(id, Date.now());
-          // system:init 之外的 system 事件（thinking_tokens 等进度遥测）不落库不广播
+          // system 事件只保留 init（捕获 session id）和 interrupted（中断标记），
+          // thinking_tokens 等遥测噪声不落库不广播
           const e = event as { type: string; subtype?: string };
-          if (e.type === 'system' && e.subtype !== 'init') return;
+          if (e.type === 'system' && e.subtype !== 'init' && e.subtype !== 'interrupted') return;
           db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
             .run(id, JSON.stringify(event), Date.now());
           this.touch(id);
@@ -161,6 +162,12 @@ export class SessionManager {
           this.broadcast(id, { type: 'chat.error', sessionId: id, error: err.message });
           this.live.delete(id);
         },
+        onEnded: () => {
+          // 进程流终止（中断/正常退出）：状态复位，下次发言凭 resume 重启进程
+          this.live.delete(id);
+          this.setStatus(id, 'idle');
+          this.broadcast(id, { type: 'chat.done', sessionId: id });
+        },
       },
     );
     session.start();
@@ -186,6 +193,11 @@ export class SessionManager {
 
   respondPermission(sessionId: string, requestId: string, allow: boolean): boolean {
     return this.live.get(sessionId)?.respondPermission(requestId, allow) ?? false;
+  }
+
+  /** 中断会话当前轮次 */
+  interrupt(id: string) {
+    this.live.get(id)?.interrupt();
   }
 
   /** 删除会话：杀掉进程（若在跑）、清空消息与功能归档关联 */

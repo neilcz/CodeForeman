@@ -108,6 +108,7 @@ export type ClientMessage =
   | { type: 'session.subscribe'; sessionId: string }
   | { type: 'session.unsubscribe'; sessionId: string }
   | { type: 'chat.send'; sessionId: string; text: string }
+  | { type: 'chat.interrupt'; sessionId: string }
   | { type: 'permission.respond'; sessionId: string; requestId: string; allow: boolean };
 
 // ---------- 服务端 → 客户端 ----------

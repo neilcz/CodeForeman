@@ -19,6 +19,8 @@ export interface ClaudeSessionCallbacks {
   onPermissionRequest: (req: PermissionRequestEvent) => void;
   /** 权限请求已被处理（用于前端清除卡片） */
   onPermissionResolved: (requestId: string, allow: boolean) => void;
+  /** 会话进程流结束（中断/崩溃/正常退出），无论原因 */
+  onEnded: () => void;
   onError: (err: Error) => void;
 }
 
@@ -32,6 +34,7 @@ export class ClaudeSession {
   private permissionResolvers = new Map<string, (allow: boolean) => void>();
   private started = false;
   private closed = false;
+  private abortController: AbortController | null = null;
 
   constructor(
     private opts: { cwd: string; resume?: string | null },
@@ -48,6 +51,11 @@ export class ClaudeSession {
     this.wakeup?.();
   }
 
+  /** 中断当前轮次（进程将被终止，下次发言凭 resume 重续） */
+  interrupt() {
+    this.abortController?.abort();
+  }
+
   /** 前端权限确认结果回传 */
   respondPermission(requestId: string, allow: boolean): boolean {
     const resolve = this.permissionResolvers.get(requestId);
@@ -61,14 +69,20 @@ export class ClaudeSession {
   async start() {
     if (this.started) return;
     this.started = true;
+    this.abortController = new AbortController();
 
     const stream = this.messageStream();
+    let interrupted = false;
+    let errored = false;
     try {
       for await (const msg of query({
         prompt: stream,
         options: {
           cwd: this.opts.cwd,
           resume: this.opts.resume ?? undefined,
+          abortController: this.abortController,
+          // 文件编辑自动放行（低风险高频），Bash/网络等仍需网页确认
+          permissionMode: 'acceptEdits',
           canUseTool: (toolName, input, { signal }) => this.handlePermission(toolName, input, signal),
         },
       })) {
@@ -80,7 +94,19 @@ export class ClaudeSession {
         if (m.type === 'result') this.cb.onTurnDone();
       }
     } catch (err) {
-      if (!this.closed) this.cb.onError(err as Error);
+      if (this.abortController.signal.aborted) {
+        interrupted = true;
+      } else if (!this.closed) {
+        errored = true;
+        this.cb.onError(err as Error);
+      }
+    } finally {
+      this.closed = true;
+      if (interrupted) {
+        this.cb.onEvent({ type: 'system', subtype: 'interrupted', message: '用户中断，本轮终止' });
+      }
+      // 出错路径已由 onError 处理状态（error），不再覆盖为 idle
+      if (!errored) this.cb.onEnded();
     }
   }
 

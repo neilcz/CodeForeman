@@ -79,6 +79,10 @@ function EventView({ event }: { event: StoredEvent }) {
     return <div className="turn-done">—— 本轮结束 · {secs}s{event.total_cost_usd ? ` · $${event.total_cost_usd.toFixed(4)}` : ''} ——</div>;
   }
 
+  if (event.type === 'system' && event.subtype === 'interrupted') {
+    return <div className="turn-done">—— ⛔ 已中断 ——</div>;
+  }
+
   if (event.type === 'error') {
     return <div className="error">出错：{String(event.message?.content ?? '')}</div>;
   }
@@ -177,6 +181,11 @@ export default function ChatPage() {
     if (!text || !sessionId) return;
     sendWs({ type: 'chat.send', sessionId, text });
     setInput('');
+  };
+
+  const interrupt = () => {
+    if (!sessionId) return;
+    sendWs({ type: 'chat.interrupt', sessionId });
   };
 
   const respondPermission = (allow: boolean) => {
@@ -288,7 +297,6 @@ export default function ChatPage() {
 
             <div className="messages">
               {events.map((e, i) => <EventView key={i} event={e} />)}
-              {active.status === 'running' && <div className="thinking">Claude 正在工作…</div>}
 
               {permission && (
                 <div className="permission-card">
@@ -298,6 +306,13 @@ export default function ChatPage() {
                     <button className="allow" onClick={() => respondPermission(true)}>允许</button>
                     <button className="deny" onClick={() => respondPermission(false)}>拒绝</button>
                   </div>
+                </div>
+              )}
+              {/* 运行指示器吸底，长对话里也能看到 Claude 还在工作 */}
+              {active.status === 'running' && (
+                <div className="thinking sticky">
+                  Claude 正在工作…
+                  <button className="interrupt-btn" onClick={interrupt}>■ 中断</button>
                 </div>
               )}
               <div ref={bottomRef} />
