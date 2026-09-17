@@ -74,13 +74,14 @@ body {
 }
 /* flex 子项默认 min-width:auto，长内容会撑爆容器 —— 全链路约束 */
 .messages > * { min-width: 0; max-width: 100%; }
-/* 注意：不能用 overflow-wrap:anywhere —— 它会让 CJK 文本的 min-content 塌缩成单字宽，
-   flex 布局下气泡会被挤成竖排。break-word 只在必要时断行，不影响 min-content。 */
+/* 气泡宽度约束必须加在 root（.messages 的直接子级，父宽确定，百分比可正常解析）。
+   千万别在 content 上用百分比 max-width：content 处于 shrink-to-fit 循环里，
+   循环百分比按规范退化为 min-content 尺寸，CJK min-content = 单字宽 → 竖排气泡。 */
+.messages .ant-bubble { max-width: min(85%, 720px); }
 .messages .ant-bubble .ant-bubble-content {
   white-space: pre-wrap;
   word-break: normal;
   overflow-wrap: break-word;
-  max-width: min(85%, 720px);
 }
 
 .tool-block { align-self: flex-start; max-width: 85%; min-width: 0; }
@@ -105,5 +106,5 @@ body {
   .back-mobile { display: inline-block !important; }
   .page-content { padding: 12px; }
   .file-tree { position: absolute; z-index: 10; background: #1f1f1f; height: 100%; }
-  .messages .ant-bubble .ant-bubble-content { max-width: 95%; }
+  .messages .ant-bubble { max-width: 95%; }
 }
