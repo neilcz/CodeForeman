@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Card, Empty, Select, Space, Tag, Timeline, Typography } from 'antd';
+import { AimOutlined, CommentOutlined, BranchesOutlined } from '@ant-design/icons';
 import type { FeatureInfo, ProjectInfo } from '@codeforeman/shared';
 import { api } from '../api';
 
@@ -58,14 +59,20 @@ export default function FeaturesPage() {
                     children: (
                       <Space wrap size={8}>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item.createdAt)}</Typography.Text>
-                        <Tag>{item.kind === 'task' ? '🎯 任务' : '💬 会话'}</Tag>
+                        <Tag icon={item.kind === 'task' ? <AimOutlined /> : <CommentOutlined />}>
+                          {item.kind === 'task' ? '任务' : '会话'}
+                        </Tag>
                         <span>{item.label}</span>
                         {item.firstPrompt && (
                           <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 300 }}>
                             「{item.firstPrompt}」
                           </Typography.Text>
                         )}
-                        {item.mergeCommit && <Typography.Text style={{ fontSize: 12, color: '#4ade80' }}>⎇ {item.mergeCommit}</Typography.Text>}
+                        {item.mergeCommit && (
+                          <Typography.Text style={{ fontSize: 12, color: '#4ade80' }}>
+                            <BranchesOutlined /> {item.mergeCommit}
+                          </Typography.Text>
+                        )}
                         {item.kind === 'session' && (
                           <Button size="small" type="link" onClick={() => navigate(`/chat/${item.refId}`)}>查看</Button>
                         )}

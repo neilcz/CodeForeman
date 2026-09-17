@@ -16,18 +16,22 @@
 
 ```bash
 npm install
-cp .env.example .env   # 填入 Claude/Kimi 凭证，可设 ADMIN_PASSWORD
+cp .env.example .env   # 填入 Claude/Kimi 凭证，可设 ADMIN_PASSWORD / PROJECTS_DIR
 npm run build
 npm run dev:server     # 后端 http://localhost:3780
 npm run dev:web        # 前端 http://localhost:5173（代理 /api 和 /ws）
 ```
 
+`PROJECTS_DIR` 指定项目根目录（默认 `data/projects`），其下每个一级子文件夹启动时自动发现为项目；显式配置了不存在的路径会启动即报错，防止静默建错目录。项目页也可手动「扫描目录」。
+
 ## Docker 部署
 
 ```bash
 # 1. 准备代码目录（宿主机磁盘，git 管理）与配置
+#    该目录下每个一级子文件夹会被自动发现为一个项目
 mkdir -p data/projects
 cp .env.example .env   # 填凭证 + ADMIN_PASSWORD
+#    代码目录不在默认位置时，在 .env 里设 HOST_PROJECTS_DIR=/path/to/projects
 
 # 2. 构建并启动（更新代码后也用这条，--build 保证重建镜像）
 docker compose up -d --build

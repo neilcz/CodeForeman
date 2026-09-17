@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { App, Button, Card, Checkbox, Empty, Form, Input, List, Popconfirm, Select, Space, Tag, Typography } from 'antd';
-import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, BranchesOutlined } from '@ant-design/icons';
 import type { ProjectInfo, TaskInfo, TaskStatus } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage } from '../ws';
@@ -132,7 +132,7 @@ export default function BacklogPage() {
               )}
               {t.branch && (
                 <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                  ⎇ {t.branch}{t.mergeCommit ? ` → ${t.mergeCommit}` : ''}
+                  <BranchesOutlined /> {t.branch}{t.mergeCommit ? ` → ${t.mergeCommit}` : ''}
                 </Typography.Text>
               )}
               {t.error && <Typography.Text type="danger" style={{ fontSize: 12 }}>{t.error}</Typography.Text>}

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { App, Alert, Button, Divider, Form, Input, Modal, Select, Space, Tag, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { Conversations, Bubble, Sender } from '@ant-design/x';
-import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined, LoadingOutlined, CloseCircleFilled, ToolOutlined } from '@ant-design/icons';
 import type { FeatureInfo, ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage, sendWs } from '../ws';
@@ -39,7 +39,7 @@ interface StoredEvent {
 function ToolUseView({ name, input }: { name?: string; input: unknown }) {
   return (
     <details className="tool-block">
-      <summary><Tag color="blue">🔧 {name}</Tag></summary>
+      <summary><Tag color="blue"><ToolOutlined /> {name}</Tag></summary>
       <pre>{JSON.stringify(input, null, 2)?.slice(0, 2000)}</pre>
     </details>
   );
@@ -91,7 +91,11 @@ function EventView({ event }: { event: StoredEvent }) {
   }
 
   if (event.type === 'system' && event.subtype === 'interrupted') {
-    return <Divider plain style={{ margin: '4px 0' }}><Typography.Text type="danger" style={{ fontSize: 12 }}>⛔ 已中断</Typography.Text></Divider>;
+    return (
+      <Divider plain style={{ margin: '4px 0' }}>
+        <Typography.Text type="danger" style={{ fontSize: 12 }}><StopOutlined /> 已中断</Typography.Text>
+      </Divider>
+    );
   }
 
   if (event.type === 'error') {
@@ -239,7 +243,17 @@ export default function ChatPage() {
               <div>
                 <div>{s.title || `会话 ${s.id.slice(0, 8)}`}</div>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  {s.projectName ?? '未绑定'}{s.status === 'running' ? ' · ⏳ 进行中' : s.status === 'error' ? ' · ❌ 出错' : ''}
+                  {s.projectName ?? '未绑定'}
+                  {s.status === 'running' && (
+                    <Typography.Text style={{ fontSize: 11, color: '#1677ff', marginLeft: 6 }}>
+                      <LoadingOutlined spin /> 进行中
+                    </Typography.Text>
+                  )}
+                  {s.status === 'error' && (
+                    <Typography.Text type="danger" style={{ fontSize: 11, marginLeft: 6 }}>
+                      <CloseCircleFilled /> 出错
+                    </Typography.Text>
+                  )}
                 </Typography.Text>
               </div>
             ),
