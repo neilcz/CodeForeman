@@ -117,7 +117,7 @@ export default function BacklogPage() {
               size="small"
               style={{
                 marginBottom: 10,
-                ...(t.status === 'running' ? { borderColor: '#6366f1' } : t.status === 'conflict' ? { borderColor: '#ef4444' } : {}),
+                ...(t.status === 'running' ? { borderColor: '#22c55e' } : t.status === 'conflict' ? { borderColor: '#ef4444' } : {}),
               }}
             >
               <Space wrap style={{ marginBottom: 4 }}>

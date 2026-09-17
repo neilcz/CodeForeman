@@ -46,6 +46,16 @@ body {
   background: #1f1f1f;
 }
 .conversations { flex: 1; overflow-y: auto; }
+/* 会话项文字顶边框：补足内边距与行距 */
+.conversations .ant-conversations-item {
+  padding: 8px 12px;
+  margin-bottom: 2px;
+}
+.conversations .ant-conversations-item-selected {
+  background: rgba(34, 197, 94, 0.12);
+}
+/* 用户气泡用主色绿，与整体一致 */
+.bubble-user { background: rgba(34, 197, 94, 0.25) !important; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .chat-header {
   padding: 8px 16px; border-bottom: 1px solid #303030;

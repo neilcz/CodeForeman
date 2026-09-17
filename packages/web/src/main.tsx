@@ -12,7 +12,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       locale={zhCN}
       theme={{
         algorithm: theme.darkAlgorithm,
-        token: { colorPrimary: '#6366f1', borderRadius: 8 },
+        token: { colorPrimary: '#22c55e', borderRadius: 8 },
+        components: {
+          // 顶部导航与页面同为中性深灰，不要 antd 默认的深蓝
+          Layout: { headerBg: '#1f1f1f', headerPadding: '0 16px' },
+          Menu: { darkItemBg: 'transparent', horizontalItemSelectedBg: 'rgba(34, 197, 94, 0.15)' },
+        },
       }}
     >
       <AntApp>

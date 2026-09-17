@@ -60,8 +60,8 @@ export default function App() {
 
   return (
     <Layout style={{ height: '100vh' }}>
-      <Layout.Header style={{ display: 'flex', alignItems: 'center', padding: '0 16px', gap: 24 }}>
-        <Typography.Text strong style={{ color: '#fff', fontSize: 16, whiteSpace: 'nowrap' }}>
+      <Layout.Header style={{ display: 'flex', alignItems: 'center', gap: 24, borderBottom: '1px solid #303030' }}>
+        <Typography.Text strong style={{ color: '#22c55e', fontSize: 16, whiteSpace: 'nowrap' }}>
           CodeForeman
         </Typography.Text>
         <Menu
@@ -70,7 +70,7 @@ export default function App() {
           selectedKeys={[selectedKey]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
-          style={{ flex: 1, minWidth: 0 }}
+          style={{ flex: 1, minWidth: 0, background: 'transparent', borderBottom: 'none' }}
         />
         <Dropdown
           menu={{
