@@ -1,6 +1,49 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+build/
+*.tsbuildinfo
+
+# Runtime data / logs / backups
 data/
+logs/
+backups/
 *.log
-.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+!.env.example
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Cache
+.cache/
+.turbo/
+.parcel-cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code / plan files
+CLAUDE.md
+claude.md
+.claude/
+PLAN.md
+plan.md
