@@ -5,7 +5,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import pino from 'pino';
 import type { WebSocket } from 'ws';
-import type { ClientMessage, HealthStatus } from '@codeforeman/shared';
+import type { ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
 import { config } from './config.js';
 import { db } from './db/index.js';
 import { detectClaude } from './claude/detect.js';
@@ -15,6 +15,9 @@ import * as tasks from './tasks/index.js';
 import * as features from './features/index.js';
 import * as git from './git/index.js';
 import * as auth from './auth/index.js';
+import * as sshkeys from './sshkeys/index.js';
+import * as settings from './settings/index.js';
+import { oneShotText } from './ai.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -23,6 +26,8 @@ declare module 'fastify' {
 }
 
 auth.seedAdmin();
+// SSH key 初始化要早于一切 git 操作：GIT_SSH_COMMAND 指向自管 ssh config
+sshkeys.initSshKeys();
 
 // 启动时自动扫描项目根目录：每个子文件夹即一个项目（新发现的归 admin、私有）
 {
@@ -50,7 +55,27 @@ recoverFromCrash();
 
 const logDir = path.join(config.dataDir, 'logs');
 fs.mkdirSync(logDir, { recursive: true });
-const logger = pino(pino.multistream([
+const logger = pino({
+  serializers: {
+    // 覆盖 Fastify 默认 req 序列化：凭证落日志前必须脱敏，共三处——
+    // url 里的 ?token=、展开的 query.token、authorization 头（Bearer token）。
+    // 注意：std 序列化器返回的 query/headers 与原请求对象是同一引用，
+    // 直接改会污染正在处理的请求（曾导致鉴权失效），必须先拷贝再脱敏。
+    req: (req) => {
+      const s = pino.stdSerializers.req(req) as {
+        url?: string;
+        query?: Record<string, unknown>;
+        headers?: Record<string, unknown>;
+      };
+      return {
+        ...s,
+        url: s.url?.replace(/([?&]token=)[^&]*/g, '$1***'),
+        query: s.query?.token ? { ...s.query, token: '***' } : s.query,
+        headers: s.headers?.authorization ? { ...s.headers, authorization: '***' } : s.headers,
+      };
+    },
+  },
+}, pino.multistream([
   { stream: process.stdout },
   { stream: fs.createWriteStream(path.join(logDir, 'server.log'), { flags: 'a' }) },
 ]));
@@ -239,6 +264,96 @@ app.post('/api/projects/:id/git/checkout', async (req, reply) => {
   }
 });
 
+/** 提交全部改动：传 message 直接提交；传 ai: true 则让 Claude 看 diff 生成 message */
+app.post('/api/projects/:id/git/commit', async (req, reply) => {
+  const root = accessibleProjectPath(req, (req.params as { id: string }).id);
+  if (!root) return reply.code(403).send({ error: '无权访问该项目' });
+  const body = (req.body ?? {}) as { message?: string; ai?: boolean };
+  if ((await git.status(root)).length === 0) {
+    return reply.code(400).send({ error: '没有待提交的改动' });
+  }
+  let msg = body.message?.trim();
+  if (!msg && body.ai) {
+    const diff = await git.diffHead(root);
+    msg = (await oneShotText(root, [
+      '根据以下 git diff 生成一条简洁的中文 commit message。',
+      '要求：conventional commits 格式（如 feat:/fix:/docs: 开头），50 字以内，只输出 message 本身，不要解释。',
+      '',
+      diff,
+    ].join('\n'))) ?? undefined;
+  }
+  if (!msg) return reply.code(400).send({ error: '缺少 commit message' });
+  try {
+    await git.commitAll(root, msg);
+    return { ok: true, message: msg, branch: await git.currentBranch(root) };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+// ---------- 全局设置（读取人人可；修改仅 admin） ----------
+
+app.get('/api/settings', async () => ({
+  permissionPolicy: settings.getPermissionPolicy(),
+  instructions: settings.getInstructions(),
+}));
+
+app.put('/api/settings', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  const body = (req.body ?? {}) as { permissionPolicy?: PermissionPolicy; instructions?: InstructionItem[] };
+  if (body.permissionPolicy === undefined && body.instructions === undefined) {
+    return reply.code(400).send({ error: 'permissionPolicy 或 instructions 至少传一个' });
+  }
+  try {
+    if (body.permissionPolicy !== undefined) settings.setPermissionPolicy(body.permissionPolicy);
+    if (body.instructions !== undefined) settings.setInstructions(body.instructions);
+    return { permissionPolicy: settings.getPermissionPolicy(), instructions: settings.getInstructions() };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+// ---------- SSH Key 管理（仅 admin：git 凭证是服务器全局资源，私钥永不出接口） ----------
+
+app.get('/api/ssh-keys', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  return sshkeys.listKeys();
+});
+
+app.post('/api/ssh-keys/generate', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  const body = (req.body ?? {}) as { name?: string; type?: 'ed25519' | 'rsa' };
+  if (!body.name?.trim()) return reply.code(400).send({ error: 'name 必填' });
+  try {
+    return await sshkeys.generateKey(body.name.trim(), body.type ?? 'ed25519');
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/ssh-keys/import', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  const body = (req.body ?? {}) as { name?: string; privateKey?: string; publicKey?: string };
+  if (!body.name?.trim() || !body.privateKey?.trim()) {
+    return reply.code(400).send({ error: 'name 和 privateKey 必填' });
+  }
+  try {
+    return await sshkeys.importKey(body.name.trim(), body.privateKey, body.publicKey);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/ssh-keys/:name', async (req, reply) => {
+  if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
+  try {
+    sshkeys.deleteKey((req.params as { name: string }).name);
+    return { ok: true };
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
 // ---------- 会话 ----------
 
 app.get('/api/sessions', async (req) => sessionManager.list(req.user));
@@ -260,6 +375,21 @@ app.get('/api/sessions/:id/messages', async (req, reply) => {
   }
   const { after } = req.query as { after?: string };
   return sessionManager.history(id, after ? Number(after) : 0);
+});
+
+/** 「存为计划」草稿：总结当前会话生成标题 + 描述 */
+app.post('/api/sessions/:id/plan-draft', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const session = sessionManager.get(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  if (session.projectId && !projects.canAccess(req.user!, session.projectId)) {
+    return reply.code(403).send({ error: '无权访问该会话' });
+  }
+  try {
+    return await sessionManager.draftPlan(id);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
 });
 
 app.delete('/api/sessions/:id', async (req, reply) => {
@@ -325,6 +455,15 @@ app.post('/api/tasks/:id/execute', async (req, reply) => {
 app.post('/api/tasks/:id/complete', async (req, reply) => {
   try {
     return await tasks.completeTask((req.params as { id: string }).id);
+  } catch (err) {
+    return reply.code(400).send({ error: (err as Error).message });
+  }
+});
+
+/** 合并冲突 → 拉起 Claude 会话自动解冲突 */
+app.post('/api/tasks/:id/resolve-conflict', async (req, reply) => {
+  try {
+    return await tasks.resolveConflict((req.params as { id: string }).id);
   } catch (err) {
     return reply.code(400).send({ error: (err as Error).message });
   }

@@ -61,6 +61,10 @@ body {
 }
 /* 用户气泡跟随主色蓝 */
 .bubble-user { background: rgba(22, 119, 255, 0.28) !important; }
+/* 会话列表条目与项目筛选下拉同宽（撑满侧栏；组件默认 paddingSM 内边距需去掉，
+   注意 cssinjs 运行时注入的样式后加载，需更高特异性 .chat-sider .conversations 才能覆盖） */
+.chat-sider .conversations { width: 100%; padding-inline: 0; gap: 2px; }
+.chat-sider .conversations .ant-conversations-item { width: 100%; box-sizing: border-box; padding-block: 3px; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .chat-header {
   padding: 8px 16px; border-bottom: 1px solid #303030;
@@ -70,26 +74,104 @@ body {
 
 .messages {
   flex: 1; overflow-y: auto; overflow-x: hidden;
-  padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  padding: 16px; display: flex; flex-direction: column; gap: 2px;
 }
 /* flex 子项默认 min-width:auto，长内容会撑爆容器 —— 全链路约束 */
 .messages > * { min-width: 0; max-width: 100%; }
-/* 气泡宽度约束必须加在 root（.messages 的直接子级，父宽确定，百分比可正常解析）。
+
+/* 用户气泡宽度约束必须加在 root（父宽确定，百分比可正常解析）。
    千万别在 content 上用百分比 max-width：content 处于 shrink-to-fit 循环里，
    循环百分比按规范退化为 min-content 尺寸，CJK min-content = 单字宽 → 竖排气泡。 */
-.messages .ant-bubble { max-width: min(85%, 720px); }
+.messages .ant-bubble { max-width: min(85%, 720px); margin: 4px 0; }
 .messages .ant-bubble .ant-bubble-content {
   white-space: pre-wrap;
   word-break: normal;
   overflow-wrap: break-word;
 }
 
-.tool-block { align-self: flex-start; max-width: 85%; min-width: 0; }
-.tool-block pre, .perm-pre {
+/* ---------- 会话消息（Claude Code 风格缩略行：圆点 + 竖线 + 摘要，点击展开） ---------- */
+.cc-row { position: relative; padding-left: 22px; padding-bottom: 6px; align-self: stretch; }
+/* 竖向连接线：每行各画一段，相邻行自然衔接成时间轴 */
+.cc-row::before {
+  content: ''; position: absolute; left: 5px; top: 0; bottom: 0;
+  border-left: 1px solid #303030;
+}
+.cc-row > summary {
+  display: block; cursor: pointer; list-style: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 24px; font-size: 13px;
+  padding-right: 62px; /* 给右侧时间戳 + 展开箭头留位 */
+}
+.cc-row > summary::-webkit-details-marker { display: none; }
+/* 时间戳（右上角，箭头左侧） */
+.cc-time {
+  position: absolute; right: 16px; top: 0;
+  font-size: 11px; color: #71717a; font-weight: normal;
+}
+/* 展开箭头（右上角） */
+.cc-row > summary::after {
+  content: ''; position: absolute; right: 2px; top: 9px; padding: 3px;
+  border: solid #71717a; border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg); transition: transform .15s;
+}
+.cc-row[open] > summary::after { transform: rotate(45deg); }
+.cc-dot {
+  position: absolute; left: 0; top: 7px;
+  width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid #52525b; background: #141414;
+}
+.cc-dot-ai { background: #52525b; }
+.cc-dot-tool { background: #69b1ff; border-color: #69b1ff; }
+.cc-dot-think { border-style: dashed; }
+.cc-dim { color: #71717a; }
+.cc-detail { margin-top: 4px; min-width: 0; }
+.cc-think-body { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+/* 展开详情里的 IN/OUT 盒 */
+.cc-box { border: 1px solid #303030; border-radius: 8px; overflow: hidden; }
+.cc-io { display: flex; gap: 10px; padding: 8px 10px; }
+.cc-io + .cc-io { border-top: 1px solid #303030; }
+.cc-io-label { flex-shrink: 0; width: 30px; font-size: 10px; font-weight: 600; color: #71717a; padding-top: 2px; }
+.cc-io pre {
+  margin: 0; flex: 1; min-width: 0;
+  font-size: 12px; white-space: pre-wrap; word-break: break-all;
+  max-height: 320px; overflow-y: auto; overflow-x: hidden;
+}
+/* 错误等非折叠行：与缩略行同样左缩进对齐 */
+.cc-plain { padding-left: 22px; }
+/* 最后一条 AI 总结：展开显示、字体加大、无时间线 */
+.cc-final { padding: 6px 0 10px; font-size: 15px; line-height: 1.7; }
+.cc-final .md-body { font-size: 15px; }
+.cc-final-time { font-size: 11px; margin-top: 6px; }
+
+.perm-pre {
   margin: 6px 0 0; font-size: 11px; color: #71717a;
   white-space: pre-wrap; word-break: break-all;
   max-height: 300px; overflow-y: auto; overflow-x: hidden;
 }
+
+/* ---------- Markdown（会话气泡内） ---------- */
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p, .md-body ul, .md-body ol { margin: 6px 0; }
+.md-body ul, .md-body ol { padding-left: 20px; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 12px 0 6px; font-size: 15px; }
+.md-body code {
+  background: rgba(255, 255, 255, 0.08); border-radius: 4px;
+  padding: 1px 5px; font-size: 0.9em; word-break: break-all;
+}
+.md-body pre {
+  background: #0d0d0d; border: 1px solid #303030; border-radius: 6px;
+  padding: 10px; overflow-x: auto; margin: 8px 0;
+}
+.md-body pre code { background: none; padding: 0; }
+.md-body table { border-collapse: collapse; margin: 8px 0; }
+.md-body th, .md-body td { border: 1px solid #303030; padding: 4px 10px; font-size: 13px; }
+.md-body blockquote {
+  margin: 8px 0; padding-left: 10px; border-left: 3px solid #303030; color: #a1a1aa;
+}
+/* 文件路径链接：行内 code 包一层 a */
+.md-body a.file-link { cursor: pointer; }
+.md-body a.file-link code { color: #69b1ff; text-decoration: underline; text-underline-offset: 3px; }
 
 .thinking-bar {
   position: sticky; bottom: 0; z-index: 5;

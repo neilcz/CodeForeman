@@ -128,11 +128,18 @@ function taskBranch(title: string, id: string): string {
 }
 
 /** 执行任务：切任务分支 → 拉起 Claude 会话并下达任务 */
-export async function executeTask(id: string): Promise<TaskInfo> {
+export async function executeTask(id: string): Promise<TaskInfo & { snapshotted: number }> {
   const task = getTask(id);
   if (!task) throw new Error('task not found');
   if (task.status === 'running') throw new Error('任务已在执行中');
   const project = getProject(task.projectId)!;
+
+  // 工作区可能有未提交改动（手动编辑/上个任务遗留），先落快照提交，
+  // 否则 checkout 基线分支会被 git 拒绝（"local changes would be overwritten"）
+  const snapshotted = (await git.status(project.path)).length;
+  if (snapshotted > 0) {
+    await git.commitAll(project.path, 'chore: wip 快照（执行计划前自动提交）');
+  }
 
   const branch = task.branch ?? taskBranch(task.title, task.id);
   const base = await git.defaultBranch(project.path);
@@ -150,6 +157,38 @@ export async function executeTask(id: string): Promise<TaskInfo> {
     `- 当前位于 git 任务分支 ${branch}（从 ${base} 切出），直接在本分支实现，不要切换/合并分支`,
     `- 完成后执行 git add + git commit 提交全部改动，commit message 格式：feat: ${task.title}`,
     '- 实现中有不明确的地方先给出你的假设再继续，不要停下来提问',
+  ].join('\n');
+  sessionManager.send(session.id, prompt);
+
+  return { ...getTask(id)!, snapshotted };
+}
+
+/** 合并冲突：拉起 Claude 会话在任务分支上把基线分支合并进来并解冲突 */
+export async function resolveConflict(id: string): Promise<TaskInfo> {
+  const task = getTask(id);
+  if (!task) throw new Error('task not found');
+  if (task.status !== 'conflict' || !task.branch) throw new Error(`当前状态(${task.status})无需解冲突`);
+  const project = getProject(task.projectId)!;
+  const branch = task.branch;
+  const base = await git.defaultBranch(project.path);
+
+  // 确保工作区停在任务分支上（completeTask 冲突时已切回，这里兜底防人工动过）
+  await git.commitAll(project.path, 'chore: wip 快照（解冲突前自动提交）');
+  await git.checkout(project.path, branch);
+
+  const session = sessionManager.create(project.path, `[解冲突] ${task.title}`, project.id);
+  setStatus(id, 'running', { session_id: session.id, error: null });
+
+  const prompt = [
+    `【合并冲突处理】${task.title}`,
+    '',
+    `当前位于任务分支 ${branch}，之前把它合并回 ${base} 时发生冲突。`,
+    '请执行：',
+    `1. 运行 git merge ${base}，让冲突暴露出来`,
+    '2. 逐个解决冲突文件：理解两边改动的意图，保留双方有效改动',
+    '3. 全部解决后 git add + git commit 完成合并提交',
+    `4. 不要切换分支、不要合并回 ${base}（验收时由系统处理）`,
+    '- 有不明确的地方先给出你的假设再继续，不要停下来提问',
   ].join('\n');
   sessionManager.send(session.id, prompt);
 

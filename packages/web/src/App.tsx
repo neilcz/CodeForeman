@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { Layout, Menu, Dropdown, Avatar, Space, Typography } from 'antd';
-import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { LogoutOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import ChatPage from './pages/ChatPage';
@@ -9,6 +9,7 @@ import BacklogPage from './pages/BacklogPage';
 import FeaturesPage from './pages/FeaturesPage';
 import LoginPage from './pages/LoginPage';
 import UsersPage from './pages/UsersPage';
+import SettingsPage from './pages/SettingsPage';
 import { api, getToken, setToken } from './api';
 
 interface Me {
@@ -74,7 +75,10 @@ export default function App() {
         />
         <Dropdown
           menu={{
-            items: [{ key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: logout }],
+            items: [
+              { key: 'settings', icon: <SettingOutlined />, label: '设置', onClick: () => navigate('/settings') },
+              { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: logout },
+            ],
           }}
         >
           <Space style={{ cursor: 'pointer', color: '#fff' }}>
@@ -93,6 +97,7 @@ export default function App() {
           <Route path="/backlog" element={<BacklogPage />} />
           <Route path="/features" element={<FeaturesPage />} />
           <Route path="/users" element={<UsersPage />} />
+          <Route path="/settings" element={<SettingsPage me={me} />} />
           <Route path="*" element={<Navigate to="/projects" replace />} />
         </Routes>
       </Layout.Content>

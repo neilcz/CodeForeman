@@ -109,3 +109,14 @@ export async function headCommit(cwd: string): Promise<string> {
   return git(['rev-parse', '--short', 'HEAD'], cwd);
 }
 
+/** 工作区相对 HEAD 的完整 diff（截断）；无 HEAD（空仓库）时退化为状态列表 */
+export async function diffHead(cwd: string, maxLen = 6000): Promise<string> {
+  try {
+    const out = await git(['diff', 'HEAD'], cwd);
+    return out.slice(0, maxLen);
+  } catch {
+    const changes = await status(cwd);
+    return changes.map((c) => `${c.status} ${c.path}`).join('\n').slice(0, maxLen);
+  }
+}
+

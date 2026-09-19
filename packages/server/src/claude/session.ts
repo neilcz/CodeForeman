@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { query, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
+import { autoAllow, instructionPrompt } from '../settings/index.js';
 
 export interface PermissionRequestEvent {
   requestId: string;
@@ -35,6 +36,8 @@ export class ClaudeSession {
   private started = false;
   private closed = false;
   private abortController: AbortController | null = null;
+  /** 用户显式中断标记（SDK 在进程启动失败时也会 abort 控制器，不能信 signal.aborted） */
+  private interruptRequested = false;
 
   constructor(
     private opts: { cwd: string; resume?: string | null },
@@ -53,6 +56,7 @@ export class ClaudeSession {
 
   /** 中断当前轮次（进程将被终止，下次发言凭 resume 重续） */
   interrupt() {
+    this.interruptRequested = true;
     this.abortController?.abort();
   }
 
@@ -81,7 +85,11 @@ export class ClaudeSession {
           cwd: this.opts.cwd,
           resume: this.opts.resume ?? undefined,
           abortController: this.abortController,
-          // 文件编辑自动放行（低风险高频），Bash/网络等仍需网页确认
+          // 全局指令（设置页维护：环境约束、团队约定等），追加到默认系统提示词。
+          // 进程启动时读取一次；改指令后已运行的进程不受影响，下次重起的进程生效
+          systemPrompt: { type: 'preset', preset: 'claude_code', append: instructionPrompt() },
+          // 文件编辑始终自动放行（低风险高频）；其余工具由 canUseTool 按全局权限策略决定：
+          // 自动放行或转网页人工确认
           permissionMode: 'acceptEdits',
           canUseTool: (toolName, input, { signal }) => this.handlePermission(toolName, input, signal),
         },
@@ -94,7 +102,9 @@ export class ClaudeSession {
         if (m.type === 'result') this.cb.onTurnDone();
       }
     } catch (err) {
-      if (this.abortController.signal.aborted) {
+      // 注意：进程启动失败等异常时 SDK 也会 abort 控制器，不能靠 signal.aborted 判断中断，
+      // 只有用户显式点了「中断」（interrupt()）才算用户中断，其余一律按错误上报
+      if (this.interruptRequested) {
         interrupted = true;
       } else if (!this.closed) {
         errored = true;
@@ -133,6 +143,10 @@ export class ClaudeSession {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<PermissionResult> {
+    // 按全局权限策略自动放行（默认：除删除文件外全部通过），不走人工确认
+    if (autoAllow(toolName, input)) {
+      return Promise.resolve({ behavior: 'allow', updatedInput: input });
+    }
     const requestId = randomUUID();
     return new Promise<PermissionResult>((resolve) => {
       let settled = false;

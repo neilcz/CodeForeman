@@ -103,6 +103,33 @@ export interface HealthStatus {
   endpoint: string | null;
 }
 
+export interface SshKeyInfo {
+  name: string;
+  /** ed25519 / rsa 等，取自公钥类型 */
+  type: string;
+  fingerprint: string;
+  publicKey: string;
+  createdAt: number;
+}
+
+/**
+ * 工具权限策略：
+ * - strict：编辑自动放行，Bash 等操作都需网页确认（最早的行为）
+ * - allow-except-delete：除删除文件外全部自动放行（默认）
+ * - allow-all：全部自动放行，慎用
+ */
+export type PermissionPolicy = 'strict' | 'allow-except-delete' | 'allow-all';
+
+/**
+ * 全局指令条目：注入每个 Claude 会话的系统提示词（管理员在设置页维护）。
+ * 系统预置默认条目（如数据库/Redis 走独立容器），用户可自行增删改。
+ */
+export interface InstructionItem {
+  id: string;
+  text: string;
+  enabled: boolean;
+}
+
 // ---------- 客户端 → 服务端 ----------
 
 export type ClientMessage =
@@ -119,8 +146,8 @@ export type ServerMessage =
   | { type: 'session.created'; session: SessionInfo }
   | { type: 'session.updated'; session: SessionInfo }
   | { type: 'session.status'; sessionId: string; status: SessionInfo['status'] }
-  /** Claude 原始事件（SDK message），同时已落库 */
-  | { type: 'claude.event'; sessionId: string; event: unknown }
+  /** Claude 原始事件（SDK message），同时已落库；id 为 messages 表行 id，用于重连去重/增量补拉 */
+  | { type: 'claude.event'; sessionId: string; event: unknown; id?: number; ts?: number }
   | { type: 'chat.done'; sessionId: string }
   | { type: 'chat.error'; sessionId: string; error: string }
   | { type: 'permission.request'; requestId: string; sessionId: string; toolName: string; input: unknown }

@@ -28,7 +28,15 @@ services:
       - codeforeman-db:/data/db
       # Claude 登录态持久化：容器重建后不必重新登录
       - claude-config:/root/.claude
+      # SSH key 挂载点：entrypoint 会复制到容器内 /root/.ssh 并修正权限。
+      # 注意：容器内无交互，带 passphrase 的 key 无法用（macOS keychain 也不可用），
+      # 需用无密码 key，或在 .env 把 HOST_SSH_DIR 指向放有无密码 key 的目录。
+      # 也可以不挂载，直接在「SSH Key」页面生成/导入 key（存于 codeforeman-ssh 卷）
+      - ${HOST_SSH_DIR:-~/.ssh}:/ssh-host:ro
+      # 「SSH Key」页面管理的 key 持久化
+      - codeforeman-ssh:/data/ssh-keys
 
 volumes:
   codeforeman-db:
   claude-config:
+  codeforeman-ssh:

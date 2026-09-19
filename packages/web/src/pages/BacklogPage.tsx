@@ -104,9 +104,15 @@ export default function BacklogPage() {
     }
   };
 
-  const act = async (t: TaskInfo, action: 'execute' | 'complete') => {
+  const act = async (t: TaskInfo, action: 'execute' | 'complete' | 'resolve-conflict') => {
     try {
-      await api.post(`/api/tasks/${t.id}/${action}`);
+      const res = await api.post<TaskInfo & { snapshotted?: number }>(`/api/tasks/${t.id}/${action}`);
+      if (action === 'execute' && res.snapshotted) {
+        message.info(`工作区有 ${res.snapshotted} 个未提交改动，已自动快照提交`);
+      }
+      if (action === 'resolve-conflict') {
+        message.success('已拉起 AI 解冲突会话');
+      }
     } catch (e) {
       message.error((e as Error).message);
     }
@@ -202,9 +208,14 @@ export default function BacklogPage() {
                   </Popconfirm>
                 )}
                 {t.status === 'conflict' && t.branch && (
-                  <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                    请到服务器上手动处理分支 {t.branch} 的合并
-                  </Typography.Text>
+                  <>
+                    <Button size="small" type="primary" danger onClick={() => act(t, 'resolve-conflict')}>
+                      AI 解冲突
+                    </Button>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      或到服务器上手动处理分支 {t.branch} 的合并
+                    </Typography.Text>
+                  </>
                 )}
               </Space>
             </Card>

@@ -101,6 +101,13 @@ const migrations: string[] = [
   `
   ALTER TABLE projects ADD COLUMN managed INTEGER NOT NULL DEFAULT 1;
   `,
+  // v7: 全局设置（kv）—— 目前只有 permission_policy
+  `
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  `,
 ];
 
 export function migrate() {

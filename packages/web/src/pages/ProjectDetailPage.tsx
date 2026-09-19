@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { App, Button, Select, Space, Tag, Tree, Typography } from 'antd';
+import { App, Button, Input, Modal, Select, Space, Tag, Tree, Typography } from 'antd';
 import type { TreeDataNode } from 'antd';
 import { CommentOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SaveOutlined, BranchesOutlined } from '@ant-design/icons';
 import type { FileNode, GitState, ProjectInfo, SessionInfo } from '@codeforeman/shared';
@@ -27,6 +27,9 @@ export default function ProjectDetailPage() {
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
   const [treeOpen, setTreeOpen] = useState(true);
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [commitMsg, setCommitMsg] = useState('');
+  const [committing, setCommitting] = useState<'manual' | 'ai' | null>(null);
 
   const refreshGit = () => id && api.get<GitState | { isRepo: false }>(`/api/projects/${id}/git`).then(setGitState);
 
@@ -63,6 +66,23 @@ export default function ProjectDetailPage() {
   const startChat = async () => {
     const s = await api.post<SessionInfo>('/api/sessions', { projectId: id });
     navigate(`/chat/${s.id}`);
+  };
+
+  /** 提交全部改动：manual 用输入框的 message；ai 让 Claude 看 diff 生成 */
+  const commitChanges = async (mode: 'manual' | 'ai') => {
+    setCommitting(mode);
+    try {
+      const res = await api.post<{ message: string }>(`/api/projects/${id}/git/commit`,
+        mode === 'ai' ? { ai: true } : { message: commitMsg.trim() });
+      message.success(`已提交：${res.message}`);
+      setCommitOpen(false);
+      setCommitMsg('');
+      refreshGit();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setCommitting(null);
+    }
   };
 
   const switchBranch = async (branch: string) => {
@@ -111,7 +131,11 @@ export default function ProjectDetailPage() {
               onChange={switchBranch}
               popupMatchSelectWidth={false}
             />
-            {gitState.changes.length > 0 && <Tag color="orange">{gitState.changes.length} 个改动</Tag>}
+            {gitState.changes.length > 0 && (
+              <Tag color="orange" style={{ cursor: 'pointer' }} onClick={() => setCommitOpen(true)}>
+                {gitState.changes.length} 个改动
+              </Tag>
+            )}
           </>
         )}
         {gitState && !gitState.isRepo && (
@@ -176,6 +200,45 @@ export default function ProjectDetailPage() {
           )}
         </div>
       )}
+
+      <Modal
+        title="提交工作区改动"
+        open={commitOpen}
+        onCancel={() => setCommitOpen(false)}
+        footer={null}
+      >
+        <div style={{ maxHeight: 200, overflow: 'auto', marginBottom: 12 }}>
+          {gitState?.isRepo && gitState.changes.map((c) => (
+            <Typography.Text key={c.path} type="secondary" style={{ fontSize: 12, display: 'block' }}>
+              {c.status} {c.path}
+            </Typography.Text>
+          ))}
+        </div>
+        <Input
+          placeholder="commit message（留空可用 AI 生成）"
+          value={commitMsg}
+          onChange={(e) => setCommitMsg(e.target.value)}
+          onPressEnter={() => commitMsg.trim() && commitChanges('manual')}
+          style={{ marginBottom: 12 }}
+        />
+        <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+          <Button
+            loading={committing === 'ai'}
+            disabled={committing === 'manual'}
+            onClick={() => commitChanges('ai')}
+          >
+            AI 生成并提交
+          </Button>
+          <Button
+            type="primary"
+            loading={committing === 'manual'}
+            disabled={!commitMsg.trim() || committing === 'ai'}
+            onClick={() => commitChanges('manual')}
+          >
+            提交
+          </Button>
+        </Space>
+      </Modal>
     </div>
   );
 }

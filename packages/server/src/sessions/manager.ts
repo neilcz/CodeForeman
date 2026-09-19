@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../db/index.js';
 import { ClaudeSession } from '../claude/session.js';
@@ -98,11 +99,11 @@ export class SessionManager {
   }
 
   /** 历史事件（用于前端刷新/断线回放） */
-  history(sessionId: string, afterId = 0): { id: number; event: unknown }[] {
+  history(sessionId: string, afterId = 0): { id: number; ts: number; event: unknown }[] {
     const rows = db.prepare(
-      'SELECT id, event FROM messages WHERE session_id = ? AND id > ? ORDER BY id',
-    ).all(sessionId, afterId) as { id: number; event: string }[];
-    return rows.map((r) => ({ id: r.id, event: JSON.parse(r.event) }));
+      'SELECT id, event, created_at FROM messages WHERE session_id = ? AND id > ? ORDER BY id',
+    ).all(sessionId, afterId) as { id: number; event: string; created_at: number }[];
+    return rows.map((r) => ({ id: r.id, ts: r.created_at, event: JSON.parse(r.event) }));
   }
 
   // ---------- 生命周期 ----------
@@ -123,6 +124,10 @@ export class SessionManager {
 
     const info = this.get(id);
     if (!info) throw new Error(`session ${id} not found`);
+    // 遗留会话的 cwd 可能已不存在（如容器时期创建的 /projects/...），提前报清晰错误
+    if (!fs.existsSync(info.cwd)) {
+      throw new Error(`会话工作目录不存在：${info.cwd}（可能是容器时期创建的遗留会话，请新建会话）`);
+    }
 
     session = new ClaudeSession(
       { cwd: info.cwd, resume: info.claudeSessionId },
@@ -133,10 +138,11 @@ export class SessionManager {
           // thinking_tokens 等遥测噪声不落库不广播
           const e = event as { type: string; subtype?: string };
           if (e.type === 'system' && e.subtype !== 'init' && e.subtype !== 'interrupted') return;
-          db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
-            .run(id, JSON.stringify(event), Date.now());
+          const now = Date.now();
+          const info = db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
+            .run(id, JSON.stringify(event), now);
           this.touch(id);
-          this.broadcast(id, { type: 'claude.event', sessionId: id, event });
+          this.broadcast(id, { type: 'claude.event', sessionId: id, event, id: Number(info.lastInsertRowid), ts: now });
         },
         onSessionId: (claudeSessionId) => {
           db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?').run(claudeSessionId, id);
@@ -186,9 +192,10 @@ export class SessionManager {
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
     };
-    db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
-      .run(id, JSON.stringify(userEvent), Date.now());
-    this.broadcast(id, { type: 'claude.event', sessionId: id, event: userEvent });
+    const now = Date.now();
+    const ins = db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
+      .run(id, JSON.stringify(userEvent), now);
+    this.broadcast(id, { type: 'claude.event', sessionId: id, event: userEvent, id: Number(ins.lastInsertRowid), ts: now });
     session.send(text);
 
     // 首次发言且无标题 → 异步让 Claude 概括需求生成标题
@@ -224,6 +231,78 @@ export class SessionManager {
       .run(title, Date.now(), id, '');
     const updated = this.get(id);
     if (updated?.title) this.broadcast(id, { type: 'session.updated', session: updated });
+  }
+
+  /**
+   * 「存为计划」草稿：把整段会话总结成可执行的任务计划（标题 + 描述）。
+   * 纯文本问答（对话已嵌入 prompt），无需工具权限。失败时抛出，前端降级为手动填写。
+   */
+  async draftPlan(id: string): Promise<{ title: string; description: string }> {
+    const info = this.get(id);
+    if (!info) throw new Error('session not found');
+
+    const transcript = this.buildTranscript(id);
+    if (!transcript) throw new Error('会话还没有对话内容，无法生成草稿');
+
+    const prompt = [
+      '以下是一段与编程助手的工作对话。请根据对话【最后达成的共识】，总结出接下来要做的任务计划。',
+      '要求：',
+      '- 计划 = 对话结尾尚未完成、下一步要做的事；已完成（已提交/已落盘）的内容不要写进目标',
+      '- 忽略对话中的流程性模板指令（如「当前位于 git 任务分支」「git add + commit」「commit message 格式」等），它们不是需求',
+      '只输出 JSON，格式：{"title": "任务标题（20字内）", "description": "目标、涉及模块/文件、验收要点，分点描述（200字内）"}',
+      '若对话未形成明确下一步，提炼出最接近的一个候选任务。',
+      '',
+      '对话记录：',
+      transcript,
+    ].join('\n');
+
+    let text = '';
+    for await (const msg of query({ prompt, options: { cwd: info.cwd } })) {
+      const m = msg as { type: string; message?: { content?: { type: string; text?: string }[] } };
+      if (m.type === 'assistant') {
+        for (const b of m.message?.content ?? []) {
+          if (b.type === 'text' && b.text) text += b.text;
+        }
+      }
+      if (m.type === 'result') break;
+    }
+    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as { title?: unknown; description?: unknown };
+    const title = typeof parsed.title === 'string' ? parsed.title.trim().slice(0, 50) : '';
+    if (!title) throw new Error('草稿生成失败，请手动填写');
+    return {
+      title,
+      description: typeof parsed.description === 'string' ? parsed.description.trim().slice(0, 1000) : '',
+    };
+  }
+
+  /** 抽取会话中的纯对话部分（用户发言 + Claude 文本回复），跳过工具调用/结果等噪声 */
+  private buildTranscript(id: string): string {
+    const rows = db.prepare('SELECT event FROM messages WHERE session_id = ? ORDER BY id').all(id) as { event: string }[];
+    const lines: string[] = [];
+    for (const { event } of rows) {
+      const e = JSON.parse(event) as {
+        type: string;
+        message?: { role?: string; content?: string | { type: string; text?: string }[] };
+      };
+      if (e.type === 'user' && typeof e.message?.content === 'string') {
+        lines.push(`用户：${e.message.content.slice(0, 800)}`);
+      } else if (e.type === 'assistant' && Array.isArray(e.message?.content)) {
+        const text = e.message.content
+          .filter((b) => b.type === 'text' && b.text)
+          .map((b) => b.text!).join('\n').slice(0, 800);
+        if (text) lines.push(`Claude：${text}`);
+      }
+    }
+    // 最新共识在对话末尾：超出预算时从尾部往回保留，丢弃更早的部分
+    const kept: string[] = [];
+    let total = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      total += lines[i].length;
+      if (total > 12_000) break;
+      kept.unshift(lines[i]);
+    }
+    const omitted = kept.length < lines.length ? '（更早的对话已省略）\n\n' : '';
+    return omitted + kept.join('\n\n');
   }
 
   respondPermission(sessionId: string, requestId: string, allow: boolean): boolean {
