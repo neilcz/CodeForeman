@@ -2,11 +2,28 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Card, Empty, Select, Space, Tag, Timeline, Typography } from 'antd';
 import { AimOutlined, CommentOutlined, BranchesOutlined } from '@ant-design/icons';
-import type { FeatureInfo, ProjectInfo } from '@codeforeman/shared';
+import type { FeatureInfo, FeatureItemInfo, ProjectInfo } from '@codeforeman/shared';
 import { api } from '../api';
 
 function formatTime(ts: number) {
   return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+interface Point { title: string; desc: string }
+
+/** 会话条目的 summary 是节点 JSON：{title, desc}（或旧格式的数组）；空串 = 被跳过/待生成 */
+function parsePoints(summary?: string): Point[] | null {
+  if (!summary) return null;
+  try {
+    const parsed = JSON.parse(summary) as unknown;
+    if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
+      return parsed as Point[];
+    }
+    if (parsed && typeof parsed === 'object' && 'title' in parsed) {
+      return [parsed as Point];
+    }
+  } catch { /* 纯文本摘要（旧数据） */ }
+  return null;
 }
 
 export default function FeaturesPage() {
@@ -23,6 +40,42 @@ export default function FeaturesPage() {
     const url = projectId ? `/api/features?projectId=${projectId}` : '/api/features';
     api.get<FeatureInfo[]>(url).then(setFeatures);
   }, [projectId]);
+
+  /** 一个条目的时间线节点：任务条目只作 meta（节点由其会话产出）；会话无节点（被跳过/待生成）不渲染 */
+  const timelineNodes = (item: FeatureItemInfo) => {
+    if (item.kind === 'task') return [];
+    const points = parsePoints(item.summary);
+    if (!points) {
+      // 旧数据兼容：非 JSON 的纯文本摘要按单节点渲染
+      if (item.summary) {
+        return [{
+          key: item.id,
+          children: (
+            <div>
+              <Typography.Text style={{ fontSize: 13 }}>{item.label}</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+                {item.summary}
+              </Typography.Paragraph>
+            </div>
+          ),
+        }];
+      }
+      return [];
+    }
+    return points.map((p, i) => ({
+      key: `${item.id}-${i}`,
+      children: (
+        <div>
+          <Typography.Text style={{ fontSize: 13 }}>{p.title}</Typography.Text>
+          {p.desc && (
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+              {p.desc}
+            </Typography.Paragraph>
+          )}
+        </div>
+      ),
+    }));
+  };
 
   return (
     <div className="page-content">
@@ -57,36 +110,34 @@ export default function FeaturesPage() {
               </Space>
             }
           >
-            {f.summary && (
-              <Typography.Paragraph type="secondary" style={{ fontSize: 13 }}>{f.summary}</Typography.Paragraph>
-            )}
+            {/* 关联的任务/会话 meta 行 */}
+            <Space wrap size={12} style={{ marginBottom: 8 }}>
+              {f.items.map((item) => (
+                <Space key={item.id} size={4}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item.createdAt)}</Typography.Text>
+                  <Tag icon={item.kind === 'task' ? <AimOutlined /> : <CommentOutlined />}>
+                    {item.kind === 'task' ? '任务' : '会话'}
+                  </Tag>
+                  {item.mergeCommit && (
+                    <Typography.Text style={{ fontSize: 12, color: '#4ade80' }}>
+                      <BranchesOutlined /> {item.mergeCommit}
+                    </Typography.Text>
+                  )}
+                  {item.kind === 'session' && (
+                    <Button size="small" type="link" style={{ padding: 0 }} onClick={() => navigate(`/chat/${item.refId}`)}>
+                      查看会话
+                    </Button>
+                  )}
+                </Space>
+              ))}
+            </Space>
             <Timeline
-              items={f.items.length === 0
-                ? [{ children: <Typography.Text type="secondary">暂无迭代记录</Typography.Text> }]
-                : f.items.map((item) => ({
-                    children: (
-                      <Space wrap size={8}>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{formatTime(item.createdAt)}</Typography.Text>
-                        <Tag icon={item.kind === 'task' ? <AimOutlined /> : <CommentOutlined />}>
-                          {item.kind === 'task' ? '任务' : '会话'}
-                        </Tag>
-                        <span>{item.label}</span>
-                        {item.firstPrompt && (
-                          <Typography.Text type="secondary" ellipsis style={{ fontSize: 12, maxWidth: 300 }}>
-                            「{item.firstPrompt}」
-                          </Typography.Text>
-                        )}
-                        {item.mergeCommit && (
-                          <Typography.Text style={{ fontSize: 12, color: '#4ade80' }}>
-                            <BranchesOutlined /> {item.mergeCommit}
-                          </Typography.Text>
-                        )}
-                        {item.kind === 'session' && (
-                          <Button size="small" type="link" onClick={() => navigate(`/chat/${item.refId}`)}>查看</Button>
-                        )}
-                      </Space>
-                    ),
-                  }))}
+              items={(() => {
+                const nodes = f.items.flatMap(timelineNodes);
+                return nodes.length > 0
+                  ? nodes
+                  : [{ children: <Typography.Text type="secondary">暂无迭代记录</Typography.Text> }];
+              })()}
             />
           </Card>
         ))

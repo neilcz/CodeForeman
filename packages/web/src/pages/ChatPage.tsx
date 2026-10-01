@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { App, Alert, Button, Divider, Form, Input, Modal, Select, Space, Spin, Typography } from 'antd';
-import type { FormInstance } from 'antd';
-import { Conversations, Bubble, Sender } from '@ant-design/x';
-import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined, LoadingOutlined, CloseCircleFilled } from '@ant-design/icons';
-import type { FeatureInfo, ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
-import { api } from '../api';
+import { Conversations, Bubble, Sender, Attachments } from '@ant-design/x';
+import type { Attachment } from '@ant-design/x/es/attachments';
+import { PlusOutlined, DeleteOutlined, StopOutlined, BulbOutlined, FolderAddOutlined, LoadingOutlined, CloseCircleFilled, PaperClipOutlined, VideoCameraOutlined, FileOutlined } from '@ant-design/icons';
+import type { AttachmentInfo, FeatureInfo, ProjectInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
+import { api, attachmentUrl, uploadAttachment } from '../api';
 import { onWsMessage, sendWs, subscribeSession, unsubscribeSession } from '../ws';
 import MarkdownView from '../MarkdownView';
 import { Editor, langOf } from '../monaco';
@@ -38,6 +38,8 @@ interface StoredEvent {
   total_cost_usd?: number;
   /** 落库时间（服务端 created_at / 广播 ts，前端注入） */
   ts?: number;
+  /** 用户消息携带的附件（服务端落库时附带） */
+  attachments?: AttachmentInfo[];
   [k: string]: unknown;
 }
 
@@ -58,7 +60,7 @@ interface ToolItem {
 }
 
 type RenderItem =
-  | { kind: 'user'; key: string; ts?: number; text: string }
+  | { kind: 'user'; key: string; ts?: number; text: string; attachments?: AttachmentInfo[] }
   | { kind: 'assistant'; key: string; ts?: number; text: string; final?: boolean }
   | { kind: 'thinking'; key: string; ts?: number; text: string }
   | ToolItem
@@ -78,7 +80,7 @@ function buildItems(events: StoredEvent[]): RenderItem[] {
     if (ev.type === 'user') {
       const content = ev.message?.content;
       if (typeof content === 'string') {
-        items.push({ kind: 'user', key: key(), ts: ev.ts, text: content });
+        items.push({ kind: 'user', key: key(), ts: ev.ts, text: content, attachments: ev.attachments });
       } else if (Array.isArray(content)) {
         for (const b of content) {
           if (b.type !== 'tool_result') continue;
@@ -100,6 +102,8 @@ function buildItems(events: StoredEvent[]): RenderItem[] {
         }
       }
     } else if (ev.type === 'result') {
+      // 历史里可能残留 resume 冷启动的空 result（num_turns:0，服务端新版已过滤），渲染时跳过
+      if ((ev as { num_turns?: number }).num_turns === 0) continue;
       const cost = ev.total_cost_usd;
       items.push({
         kind: 'result', key: key(), ts: ev.ts,
@@ -195,20 +199,44 @@ function ToolRow({ item }: { item: ToolItem }) {
   );
 }
 
-function ItemView({ item, onFileClick }: {
+function ItemView({ item, onFileClick, sessionId }: {
   item: RenderItem;
   onFileClick?: (path: string) => void;
+  sessionId?: string;
 }) {
   switch (item.kind) {
     case 'user':
-      // 用户消息保持居右气泡，不进时间轴
+      // 用户消息保持居右气泡，不进时间轴；附件（图片缩略图/文件卡片）排在文字上方
       return (
-        <Bubble
-          content={item.text}
-          placement="end"
-          classNames={{ content: 'bubble-user' }}
-          contentRender={(c) => <MarkdownView text={String(c)} onFileClick={onFileClick} />}
-        />
+        <div className="user-msg">
+          {!!item.attachments?.length && (
+            <div className="user-attach-row">
+              {item.attachments.map((a) => {
+                const url = sessionId ? attachmentUrl(sessionId, a.file) : '#';
+                if (a.kind === 'image') {
+                  return (
+                    <a key={a.file} href={url} target="_blank" rel="noreferrer" title={a.name}>
+                      <img className="attach-thumb" src={url} alt={a.name} />
+                    </a>
+                  );
+                }
+                return (
+                  <a key={a.file} className="attach-chip" href={url} target="_blank" rel="noreferrer" title={a.name}>
+                    {a.kind === 'video' ? <VideoCameraOutlined /> : <FileOutlined />} {a.name}
+                  </a>
+                );
+              })}
+            </div>
+          )}
+          {item.text && (
+            <Bubble
+              content={item.text}
+              placement="end"
+              classNames={{ content: 'bubble-user' }}
+              contentRender={(c) => <MarkdownView text={String(c)} onFileClick={onFileClick} />}
+            />
+          )}
+        </div>
       );
     case 'assistant':
       // 本轮最后一条 AI 回复（总结性文案）：展开、大字体、无时间线
@@ -279,13 +307,57 @@ export default function ChatPage() {
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [permission, setPermission] = useState<PermissionCard | null>(null);
   const [input, setInput] = useState('');
+  const [attachItems, setAttachItems] = useState<Attachment[]>([]);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  /** uid → 预览 blob URL，用于移除/发送后回收 */
+  const blobUrlsRef = useRef<Map<string, string>>(new Map());
+
+  /** 图片/视频附件补本地预览 URL（FileList 只会为图片生成缩略图，视频需要 blob 才能出首帧） */
+  const withPreview = (f: File, uid: string): Attachment => {
+    const a: Attachment = {
+      uid,
+      name: f.name || `粘贴的图片-${Date.now()}.png`,
+      size: f.size,
+      // UploadFile.originFileObj 类型是 RcFile（File + uid），运行时不依赖 uid 字段
+      originFileObj: f as Attachment['originFileObj'],
+    };
+    if (/^(image|video)\//.test(f.type)) {
+      const url = URL.createObjectURL(f);
+      blobUrlsRef.current.set(uid, url);
+      a.url = url;
+    }
+    return a;
+  };
+
+  const clearAttachments = () => {
+    for (const url of blobUrlsRef.current.values()) URL.revokeObjectURL(url);
+    blobUrlsRef.current.clear();
+    setAttachItems([]);
+    setAttachOpen(false);
+  };
+
+  /** Attachments 增删统一入口：新条目补预览 URL，移除的条目回收 blob */
+  const onAttachChange = (fileList: Attachment[]) => {
+    const next = fileList.map((it) => {
+      const f = it.originFileObj as File | undefined;
+      if (f && !it.url && /^(image|video)\//.test(f.type)) return withPreview(f, it.uid);
+      return it;
+    });
+    for (const [uid, url] of blobUrlsRef.current) {
+      if (!next.some((it) => it.uid === uid)) {
+        URL.revokeObjectURL(url);
+        blobUrlsRef.current.delete(uid);
+      }
+    }
+    setAttachItems(next);
+  };
   const [ideaOpen, setIdeaOpen] = useState(false);
   const [ideaDrafting, setIdeaDrafting] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   /** 点击消息里的文件路径 → 弹窗查看（content 为 null 表示加载中） */
   const [fileView, setFileView] = useState<{ path: string; content: string | null } | null>(null);
   const [ideaForm] = Form.useForm();
-  const [archiveForm] = Form.useForm();
   const bottomRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<string | null>(null);
   activeRef.current = sessionId ?? null;
@@ -318,6 +390,10 @@ export default function ChatPage() {
         }
         break;
       }
+      case 'session.created':
+        // 服务端（任务编排等）新拉起的会话实时进列表；hello 全量/重复广播按 id 去重
+        setSessions((s) => (s.some((x) => x.id === msg.session.id) ? s : [msg.session, ...s]));
+        break;
       case 'session.status':
         setSessions((s) => s.map((x) => (x.id === msg.sessionId ? { ...x, status: msg.status } : x)));
         break;
@@ -354,6 +430,7 @@ export default function ChatPage() {
     if (!sessionId) return;
     setEvents([]);
     setPermission(null);
+    clearAttachments(); // 待发送附件属于上个会话，切换时清空
     seenIdsRef.current = new Set();
     lastIdRef.current = 0;
     api.get<{ id: number; ts: number; event: StoredEvent }[]>(`/api/sessions/${sessionId}/messages`)
@@ -403,7 +480,8 @@ export default function ChatPage() {
 
   const createSession = async (projectId: string) => {
     const s = await api.post<SessionInfo>('/api/sessions', { projectId });
-    setSessions((prev) => [s, ...prev]);
+    // session.created 广播可能先于 POST 响应到达，按 id 去重防止重复条目
+    setSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [s, ...prev]));
     navigate(`/chat/${s.id}`);
   };
 
@@ -432,10 +510,26 @@ export default function ChatPage() {
     }
   };
 
-  const sendMessage = (text: string) => {
-    if (!text.trim() || !sessionId) return;
-    sendWs({ type: 'chat.send', sessionId, text: text.trim() });
-    setInput('');
+  const sendMessage = async (text: string) => {
+    const trimmed = text.trim();
+    if ((!trimmed && !attachItems.length) || !sessionId) return;
+    setSending(true);
+    try {
+      // 先上传附件拿到服务端路径，再随消息发出（AI 按路径 Read 查看）
+      let attachments: AttachmentInfo[] | undefined;
+      if (attachItems.length) {
+        attachments = await Promise.all(
+          attachItems.map((it) => uploadAttachment(sessionId, it.originFileObj as File)),
+        );
+      }
+      sendWs({ type: 'chat.send', sessionId, text: trimmed, attachments });
+      setInput('');
+      clearAttachments();
+    } catch (e) {
+      message.error(`附件上传失败：${(e as Error).message}`);
+    } finally {
+      setSending(false);
+    }
   };
 
   const respondPermission = (allow: boolean) => {
@@ -458,6 +552,8 @@ export default function ChatPage() {
           options={projectOptions}
           onChange={changeFilter}
           placeholder="按项目筛选"
+          showSearch
+          optionFilterProp="label"
         />
         {filterProjectId ? (
           <Button type="primary" icon={<PlusOutlined />} block onClick={() => createSession(filterProjectId)}>
@@ -470,6 +566,8 @@ export default function ChatPage() {
             placeholder="+ 在项目中新建会话…"
             options={projects.map((p) => ({ value: p.id, label: p.name }))}
             onChange={(v) => v && createSession(v)}
+            showSearch
+            optionFilterProp="label"
           />
         )}
         <Conversations
@@ -533,7 +631,7 @@ export default function ChatPage() {
 
             <div className="messages">
               {items.map((it) => (
-                <ItemView key={it.key} item={it} onFileClick={openFile} />
+                <ItemView key={it.key} item={it} onFileClick={openFile} sessionId={sessionId} />
               ))}
 
               {permission && (
@@ -565,8 +663,49 @@ export default function ChatPage() {
               <Sender
                 value={input}
                 onChange={setInput}
-                onSubmit={sendMessage}
-                placeholder="输入消息，Enter 发送（Shift+Enter 换行）；对话进行中发送会排队"
+                onSubmit={(t) => void sendMessage(t)}
+                loading={sending}
+                autoSize={{ minRows: 2, maxRows: 8 }}
+                placeholder="输入消息，Enter 发送（Shift+Enter 换行）；对话进行中发送会排队；回形针或直接粘贴可添加附件"
+                header={
+                  <Sender.Header
+                    title="附件"
+                    open={attachOpen}
+                    onOpenChange={setAttachOpen}
+                    closable
+                  >
+                    <Attachments
+                      beforeUpload={() => false}
+                      items={attachItems}
+                      onChange={({ fileList }) => onAttachChange(fileList)}
+                      styles={{
+                        // 缩略图压到一行高；末尾 + 按钮同高，不再占满卡片尺寸
+                        file: { height: 40, width: 'auto' },
+                        upload: { height: 40, width: 40, minWidth: 0 },
+                      }}
+                      placeholder={{
+                        icon: <PaperClipOutlined />,
+                        title: '点击或拖拽上传',
+                        description: '支持图片、视频和任意文件，发送时随消息一起上传',
+                      }}
+                    />
+                  </Sender.Header>
+                }
+                prefix={
+                  <Button
+                    type="text"
+                    icon={<PaperClipOutlined />}
+                    onClick={() => setAttachOpen((o) => !o)}
+                    title="添加附件"
+                  />
+                }
+                onPasteFile={(files) => {
+                  // 面板收起时 Attachments 未挂载，ref 是 null —— 直接写入 state 才是可靠路径
+                  if (!files.length) return;
+                  const uid = () => `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                  setAttachItems((prev) => [...prev, ...Array.from(files).map((f) => withPreview(f, uid()))]);
+                  setAttachOpen(true);
+                }}
               />
             </div>
           </>
@@ -635,8 +774,8 @@ export default function ChatPage() {
       <ArchiveModal
         open={archiveOpen}
         sessionId={sessionId}
+        sessionTitle={active?.title}
         projectId={active?.projectId}
-        form={archiveForm}
         onClose={() => setArchiveOpen(false)}
       />
     </div>
@@ -644,63 +783,93 @@ export default function ChatPage() {
 }
 
 // 归档弹窗独立组件，避免主组件过重
-function ArchiveModal({ open, sessionId, projectId, form, onClose }: {
+// 交互：单控件同时承担「选已有功能」和「新建功能」——
+// 打开时默认预选（归档过的功能，或新建+预填会话标题），多数情况点「归档」即完成
+const CREATE_PREFIX = '__create__:';
+
+function ArchiveModal({ open, sessionId, sessionTitle, projectId, onClose }: {
   open: boolean;
   sessionId?: string;
+  sessionTitle?: string;
   projectId?: string | null;
-  form: FormInstance;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
   const [features, setFeatures] = useState<FeatureInfo[]>([]);
+  const [value, setValue] = useState('');
+  const [search, setSearch] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (open && projectId) {
-      api.get<FeatureInfo[]>(`/api/features?projectId=${projectId}`).then(setFeatures);
+    if (!open || !projectId) return;
+    api.get<FeatureInfo[]>(`/api/features?projectId=${projectId}`).then((fs) => {
+      setFeatures(fs);
+      // 默认预选：本会话归档过的功能；否则新建功能，名称预填会话标题（去掉【任务】前缀）
+      const linked = fs.find((f) => f.items?.some((i) => i.kind === 'session' && i.refId === sessionId));
+      const cleanTitle = (sessionTitle ?? '').replace(/^[【\[]任务[】\]]\s*/, '').trim() || '未命名会话';
+      setValue(linked?.id ?? CREATE_PREFIX + cleanTitle);
+      setSearch('');
+    });
+  }, [open, projectId, sessionId, sessionTitle]);
+
+  // 新建选项的标题：优先取当前选中值里的，其次取搜索输入
+  const createTitle = value.startsWith(CREATE_PREFIX) ? value.slice(CREATE_PREFIX.length) : search.trim();
+  const exactMatch = features.some((f) => f.title === createTitle);
+  const options = [
+    ...features
+      .filter((f) => !search || f.title.toLowerCase().includes(search.toLowerCase()))
+      .map((f) => ({ value: f.id, label: f.title })),
+    ...(createTitle && !exactMatch
+      ? [{ value: CREATE_PREFIX + createTitle, label: `➕ 新建功能：${createTitle}` }]
+      : []),
+  ];
+
+  const submit = async () => {
+    if (!value) return;
+    setSaving(true);
+    try {
+      let featureId = value;
+      if (value.startsWith(CREATE_PREFIX)) {
+        const created = await api.post<{ id: string }>('/api/features', {
+          projectId,
+          title: value.slice(CREATE_PREFIX.length),
+        });
+        featureId = created.id;
+      }
+      await api.post(`/api/features/${featureId}/link`, { kind: 'session', refId: sessionId });
+      onClose();
+      message.success('已归档到功能演进，AI 正在总结本次会话的改进点…');
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
     }
-  }, [open, projectId]);
+  };
 
   return (
     <Modal
       title="归档到功能演进"
       open={open}
       onCancel={onClose}
-      onOk={() => form.submit()}
+      onOk={submit}
+      okText="归档"
+      confirmLoading={saving}
       destroyOnHidden
     >
-      <Form
-        form={form}
-        layout="vertical"
-        onFinish={async (v) => {
-          let featureId = v.featureId;
-          if (!featureId) {
-            const created = await api.post<{ id: string }>('/api/features', { projectId, title: v.newTitle.trim() });
-            featureId = created.id;
-          }
-          await api.post(`/api/features/${featureId}/link`, { kind: 'session', refId: sessionId });
-          onClose();
-          form.resetFields();
-          message.success('已归档到功能演进');
-        }}
-      >
-        <Form.Item name="featureId" label="选择已有功能">
-          <Select
-            allowClear
-            placeholder="选择一个功能，或在下面输入新功能名"
-            options={features.map((f) => ({ value: f.id, label: f.title }))}
-          />
-        </Form.Item>
-        <Form.Item
-          noStyle
-          shouldUpdate={(a, b) => a.featureId !== b.featureId}
-        >
-          {({ getFieldValue }) => !getFieldValue('featureId') && (
-            <Form.Item name="newTitle" label="新功能名称" rules={[{ required: true, message: '选择已有功能或输入新功能名' }]}>
-              <Input placeholder="如：用户登录模块" />
-            </Form.Item>
-          )}
-        </Form.Item>
-      </Form>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+        选择已有功能，或直接输入新名称创建；归档后 AI 会自动总结本次会话的改进点。
+      </Typography.Paragraph>
+      <Select
+        style={{ width: '100%' }}
+        showSearch
+        value={value || undefined}
+        searchValue={search}
+        onSearch={setSearch}
+        onChange={(v) => { setValue(v); setSearch(''); }}
+        filterOption={false}
+        options={options}
+        placeholder="搜索已有功能，或输入新功能名称"
+      />
     </Modal>
   );
 }

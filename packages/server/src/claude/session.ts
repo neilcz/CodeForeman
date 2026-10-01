@@ -94,7 +94,10 @@ export class ClaudeSession {
           canUseTool: (toolName, input, { signal }) => this.handlePermission(toolName, input, signal),
         },
       })) {
-        const m = msg as { type: string; subtype?: string; session_id?: string };
+        const m = msg as { type: string; subtype?: string; session_id?: string; num_turns?: number };
+        // resume 冷启动时 SDK 会先吐一个空 result（num_turns:0 / $0 / 0ms）再重新 init，
+        // 并非真实轮次结束：跳过，否则前端出现幽灵「本轮结束」分隔线和负成本增量
+        if (m.type === 'result' && m.num_turns === 0) continue;
         if (m.type === 'system' && m.subtype === 'init' && m.session_id) {
           this.cb.onSessionId(m.session_id);
         }

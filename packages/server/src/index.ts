@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import Fastify, { type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import pino from 'pino';
 import type { WebSocket } from 'ws';
-import type { ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
-import { config } from './config.js';
+import type { AttachmentInfo, ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
+import { config, uploadsDir } from './config.js';
 import { db } from './db/index.js';
 import { detectClaude } from './claude/detect.js';
 import { sessionManager } from './sessions/manager.js';
@@ -83,6 +86,9 @@ const logger = pino({
 const claudeVersion = await detectClaude();
 const app = Fastify({ loggerInstance: logger });
 await app.register(fastifyWebsocket);
+
+// 聊天附件上传走原始字节流（免 multipart 依赖），文件名/类型走 query
+app.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
 
 // ---------- 认证 ----------
 
@@ -403,6 +409,80 @@ app.delete('/api/sessions/:id', async (req, reply) => {
   return { ok: true };
 });
 
+// ---------- 会话附件（图片/视频/文件） ----------
+
+/** 单文件上限 500MB（视频较大） */
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
+const ATTACH_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+  '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
+  '.json': 'application/json', '.zip': 'application/zip',
+};
+
+/** 上传附件：POST 原始字节流，文件名/类型走 query（前端 fetch body=File） */
+app.post('/api/sessions/:id/attachments', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const session = sessionManager.get(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  if (session.projectId && !projects.canAccess(req.user!, session.projectId)) {
+    return reply.code(403).send({ error: '无权访问该会话' });
+  }
+  const { name, kind } = req.query as { name?: string; kind?: string };
+  if (!name) return reply.code(400).send({ error: 'name 必填' });
+  if (!Buffer.isBuffer(req.body) && typeof req.body !== 'object') {
+    return reply.code(400).send({ error: 'body 必须是 application/octet-stream' });
+  }
+  // basename 去路径 + uuid 前缀防重名/覆盖
+  const file = `${randomUUID().slice(0, 8)}-${path.basename(name)}`;
+  const dir = path.join(uploadsDir, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, file);
+
+  let size = 0;
+  let overflow = false;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      size += chunk.length;
+      if (size > MAX_UPLOAD_BYTES) {
+        overflow = true;
+        cb(new Error('文件超过 500MB 限制'));
+      } else {
+        cb(null, chunk);
+      }
+    },
+  });
+  try {
+    await pipeline(req.body as NodeJS.ReadableStream, counter, fs.createWriteStream(dest));
+  } catch (err) {
+    fs.rmSync(dest, { force: true });
+    return reply.code(overflow ? 413 : 500).send({ error: (err as Error).message });
+  }
+  const k = kind === 'image' || kind === 'video' ? kind : 'file';
+  const info: AttachmentInfo = { name: path.basename(name), file, kind: k, size };
+  return info;
+});
+
+/** 取回附件：<img>/下载链接用，支持 ?token= 鉴权（img 标签带不了 Authorization 头） */
+app.get('/api/sessions/:id/attachments/:file', async (req, reply) => {
+  const { id, file } = req.params as { id: string; file: string };
+  if (file.includes('..') || file.includes('/') || file.includes('\\')) {
+    return reply.code(400).send({ error: '非法文件名' });
+  }
+  const session = sessionManager.get(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  if (session.projectId && !projects.canAccess(req.user!, session.projectId)) {
+    return reply.code(403).send({ error: '无权访问该会话' });
+  }
+  const p = path.join(uploadsDir, id, file);
+  if (!fs.existsSync(p)) return reply.code(404).send({ error: '附件不存在（会话可能已删除）' });
+  reply.header('cache-control', 'private, max-age=86400');
+  reply.type(ATTACH_MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream');
+  return reply.send(fs.createReadStream(p));
+});
+
 // ---------- 任务（Backlog） ----------
 
 app.get('/api/tasks', async (req) => {
@@ -453,10 +533,14 @@ app.post('/api/tasks/:id/execute', async (req, reply) => {
 });
 
 app.post('/api/tasks/:id/complete', async (req, reply) => {
+  const body = (req.body ?? {}) as { force?: boolean };
   try {
-    return await tasks.completeTask((req.params as { id: string }).id);
+    return await tasks.completeTask((req.params as { id: string }).id, { force: body.force });
   } catch (err) {
-    return reply.code(400).send({ error: (err as Error).message });
+    const e = err as Error & { code?: string };
+    // branch_missing 用 409 + code，前端据此弹「标记失败 / 视为已完成」
+    return reply.code(e.code === 'branch_missing' ? 409 : 400)
+      .send({ error: e.message, ...(e.code ? { code: e.code } : {}) });
   }
 });
 
@@ -512,13 +596,28 @@ app.post('/api/features/:id/link', async (req, reply) => {
 
 // ---------- WebSocket ----------
 
-/** 所有在线 socket，用于 task.updated 等全局广播 */
-const allSockets = new Set<WebSocket>();
+/** 所有在线 socket（附用户，用于按 ACL 过滤广播），task.updated / 会话事件等全局推送用 */
+const allSockets = new Map<WebSocket, auth.AuthUser>();
 
 tasks.onTaskUpdate((task) => {
   const msg = JSON.stringify({ type: 'task.updated', task });
-  for (const s of allSockets) {
+  for (const s of allSockets.keys()) {
     if (s.readyState === s.OPEN) s.send(msg);
+  }
+});
+
+// 会话新建/状态/标题变更全局广播（按项目可见性过滤），
+// 否则未订阅该会话的页面（侧边栏、其他会话页）状态会一直停在旧值
+sessionManager.onGlobal((msg) => {
+  if (msg.type !== 'session.status' && msg.type !== 'session.created' && msg.type !== 'session.updated') return;
+  const session = msg.type === 'session.status'
+    ? sessionManager.get(msg.sessionId)
+    : msg.session;
+  const data = JSON.stringify(msg);
+  for (const [s, u] of allSockets) {
+    if (s.readyState !== s.OPEN) continue;
+    if (session?.projectId && !projects.canAccess(u, session.projectId)) continue;
+    s.send(data);
   }
 });
 
@@ -528,7 +627,7 @@ app.get('/ws', { websocket: true }, (socket: WebSocket, req) => {
     socket.close(4401, 'unauthorized');
     return;
   }
-  allSockets.add(socket);
+  allSockets.set(socket, user);
   const send = (msg: unknown) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
   };
@@ -572,7 +671,7 @@ app.get('/ws', { websocket: true }, (socket: WebSocket, req) => {
       case 'chat.send':
         if (!sessionAllowed(msg.sessionId)) return;
         try {
-          sessionManager.send(msg.sessionId, msg.text);
+          sessionManager.send(msg.sessionId, msg.text, msg.attachments);
         } catch (err) {
           send({ type: 'chat.error', sessionId: msg.sessionId, error: (err as Error).message });
         }
@@ -614,6 +713,8 @@ if (fs.existsSync(webDist)) {
 
 await app.listen({ port: config.port, host: config.host });
 app.log.info(`CodeForeman ready | claude: ${claudeVersion ?? 'NOT FOUND'} | endpoint: ${config.endpoint ?? 'official'}`);
+// 回填历史归档会话的 AI 改进点（异步串行，不阻塞启动）
+features.backfillSummaries().catch(() => {});
 
 // ---------- 优雅停机 ----------
 const shutdown = async (signal: string) => {

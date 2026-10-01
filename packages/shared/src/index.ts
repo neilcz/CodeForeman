@@ -76,6 +76,8 @@ export interface FeatureItemInfo {
   mergeCommit?: string | null;
   /** 会话特有：首条用户需求摘要 */
   firstPrompt?: string | null;
+  /** AI 生成的改进点总结（这次迭代改进/解决了什么） */
+  summary?: string;
 }
 
 export interface TaskInfo {
@@ -132,10 +134,20 @@ export interface InstructionItem {
 
 // ---------- 客户端 → 服务端 ----------
 
+/** 聊天附件：上传后服务端返回的元信息（随用户消息落库，用于历史渲染与提示词注入） */
+export interface AttachmentInfo {
+  /** 原始文件名（展示用） */
+  name: string;
+  /** 服务端存储文件名（取回 URL 用：/api/sessions/:id/attachments/:file） */
+  file: string;
+  kind: 'image' | 'video' | 'file';
+  size: number;
+}
+
 export type ClientMessage =
   | { type: 'session.subscribe'; sessionId: string }
   | { type: 'session.unsubscribe'; sessionId: string }
-  | { type: 'chat.send'; sessionId: string; text: string }
+  | { type: 'chat.send'; sessionId: string; text: string; attachments?: AttachmentInfo[] }
   | { type: 'chat.interrupt'; sessionId: string }
   | { type: 'permission.respond'; sessionId: string; requestId: string; allow: boolean };
 

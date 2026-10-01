@@ -196,7 +196,7 @@ export async function resolveConflict(id: string): Promise<TaskInfo> {
 }
 
 /** 验收完成：兜底提交 → 按 autoMerge 合并回主分支 → 删除任务分支 */
-export async function completeTask(id: string): Promise<TaskInfo> {
+export async function completeTask(id: string, opts: { force?: boolean } = {}): Promise<TaskInfo> {
   const task = getTask(id);
   if (!task) throw new Error('task not found');
   if (task.status !== 'review' && task.status !== 'running') {
@@ -204,6 +204,18 @@ export async function completeTask(id: string): Promise<TaskInfo> {
   }
   const project = getProject(task.projectId)!;
   const branch = task.branch!;
+
+  // 任务分支已被手动删除：force 时直接标记完成（不合并），否则报 branch_missing 让前端询问
+  if (!(await git.branches(project.path)).includes(branch)) {
+    if (!opts.force) {
+      const err = new Error(`任务分支 ${branch} 已不存在，无法合并`) as Error & { code?: string };
+      err.code = 'branch_missing';
+      throw err;
+    }
+    setStatus(id, 'done', { error: `分支 ${branch} 已不存在，人工确认视为完成（未合并）` });
+    autoArchiveTask(id).catch(() => {});
+    return getTask(id)!;
+  }
 
   // Claude 可能忘了 commit，兜底提交剩余改动
   await git.commitAll(project.path, `feat: ${task.title}`);

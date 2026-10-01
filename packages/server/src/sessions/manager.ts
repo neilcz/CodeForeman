@@ -1,11 +1,27 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../db/index.js';
 import { ClaudeSession } from '../claude/session.js';
-import type { ServerMessage, SessionInfo } from '@codeforeman/shared';
+import { uploadsDir } from '../config.js';
+import type { AttachmentInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
 
 type Listener = (msg: ServerMessage) => void;
+
+/**
+ * 附件清单注入提示词：文件已落盘，告知路径与查看方式——
+ * 图片用 Read 直接看（多模态）；视频 Read 看不了，提示 ffmpeg 抽帧；其余按格式读取
+ */
+function attachmentPrompt(sessionId: string, attachments: AttachmentInfo[]): string {
+  const lines = attachments.map((a) => {
+    const p = path.join(uploadsDir, sessionId, a.file);
+    if (a.kind === 'image') return `- 图片 ${a.name}：${p}（用 Read 工具查看即可理解图片内容）`;
+    if (a.kind === 'video') return `- 视频 ${a.name}：${p}（视频不能直接查看，需要时先用 ffmpeg 抽取关键帧图片再 Read）`;
+    return `- 文件 ${a.name}：${p}（按格式读取：文本直接 Read，PDF 可 Read，其他二进制用合适工具解析）`;
+  });
+  return ['用户随消息上传了以下附件（已保存到本机）：', ...lines].join('\n');
+}
 
 interface SessionRow {
   id: string;
@@ -46,6 +62,8 @@ export class SessionManager {
   private lastActivity = new Map<string, number>();
   private subscribers = new Map<string, Set<Listener>>();
   private turnDoneListeners = new Set<(sessionId: string) => void>();
+  /** 全局监听（会话新建/状态/标题变更），server 注入后向所有在线 socket 广播 */
+  private globalListeners = new Set<Listener>();
 
   /** 空闲会话回收周期（30 分钟检查一次） */
   private static SWEEP_INTERVAL = 30 * 60 * 1000;
@@ -81,6 +99,11 @@ export class SessionManager {
     this.turnDoneListeners.add(fn);
   }
 
+  /** 全局会话事件（session.created / session.status / session.updated） */
+  onGlobal(fn: Listener) {
+    this.globalListeners.add(fn);
+  }
+
   // ---------- 查询 ----------
 
   list(user?: { id: string; role: string }): SessionInfo[] {
@@ -114,7 +137,10 @@ export class SessionManager {
     db.prepare(
       'INSERT INTO sessions (id, title, cwd, project_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(id, title, cwd, projectId, 'idle', now, now);
-    return this.get(id)!;
+    const info = this.get(id)!;
+    // 全局广播：任务编排等服务端拉起的会话，否则侧边栏要刷新才能看到
+    this.broadcastGlobal({ type: 'session.created', session: info });
+    return info;
   }
 
   /** 懒启动：首条消息时才真正 spawn Claude 进程 */
@@ -182,21 +208,22 @@ export class SessionManager {
     return session;
   }
 
-  send(id: string, text: string) {
+  send(id: string, text: string, attachments?: AttachmentInfo[]) {
     const session = this.ensureLive(id);
     this.setStatus(id, 'running');
     this.lastActivity.set(id, Date.now());
-    // 用户消息也落库 + 广播，保证多端同步
+    // 用户消息也落库 + 广播，保证多端同步；attachments 仅用于历史展示，不进 prompt
     const userEvent = {
       type: 'user',
       message: { role: 'user', content: text },
       parent_tool_use_id: null,
+      ...(attachments?.length ? { attachments } : {}),
     };
     const now = Date.now();
     const ins = db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
       .run(id, JSON.stringify(userEvent), now);
     this.broadcast(id, { type: 'claude.event', sessionId: id, event: userEvent, id: Number(ins.lastInsertRowid), ts: now });
-    session.send(text);
+    session.send(attachments?.length ? `${text}\n\n${attachmentPrompt(id, attachments)}` : text);
 
     // 首次发言且无标题 → 异步让 Claude 概括需求生成标题
     const info = this.get(id);
@@ -230,7 +257,10 @@ export class SessionManager {
     db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND title = ?')
       .run(title, Date.now(), id, '');
     const updated = this.get(id);
-    if (updated?.title) this.broadcast(id, { type: 'session.updated', session: updated });
+    if (updated?.title) {
+      this.broadcast(id, { type: 'session.updated', session: updated });
+      this.broadcastGlobal({ type: 'session.updated', session: updated });
+    }
   }
 
   /**
@@ -314,7 +344,7 @@ export class SessionManager {
     this.live.get(id)?.interrupt();
   }
 
-  /** 删除会话：杀掉进程（若在跑）、清空消息与功能归档关联 */
+  /** 删除会话：杀掉进程（若在跑）、清空消息与功能归档关联、清理上传附件 */
   remove(id: string) {
     this.closeSession(id);
     db.transaction(() => {
@@ -325,6 +355,7 @@ export class SessionManager {
       db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
     })();
     this.subscribers.delete(id);
+    fs.rmSync(path.join(uploadsDir, id), { recursive: true, force: true });
   }
 
   // ---------- 订阅 ----------
@@ -343,6 +374,10 @@ export class SessionManager {
     for (const listener of this.subscribers.get(sessionId) ?? []) listener(msg);
   }
 
+  private broadcastGlobal(msg: ServerMessage) {
+    for (const listener of this.globalListeners) listener(msg);
+  }
+
   // ---------- 内部 ----------
 
   private touch(id: string) {
@@ -352,6 +387,8 @@ export class SessionManager {
   private setStatus(id: string, status: SessionInfo['status']) {
     db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), id);
     this.broadcast(id, { type: 'session.status', sessionId: id, status });
+    // 全局广播：未订阅该会话的页面（侧边栏/其他会话）也要实时更新状态
+    this.broadcastGlobal({ type: 'session.status', sessionId: id, status });
   }
 }
 

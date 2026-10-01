@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { App, Button, Card, Checkbox, Empty, Form, Input, List, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
-import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, BranchesOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, EditOutlined, BranchesOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ProjectInfo, TaskInfo, TaskStatus } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage } from '../ws';
@@ -39,6 +39,8 @@ export default function BacklogPage() {
   const [search, setSearch] = useState('');
   const [filterProjectId, setFilterProjectId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<TaskInfo | null>(null);
+  const [branchMissing, setBranchMissing] = useState<TaskInfo | null>(null);
   const [username, setUsername] = useState('');
   const { message } = App.useApp();
   const [form] = Form.useForm();
@@ -67,6 +69,7 @@ export default function BacklogPage() {
   }), []);
 
   const openModal = () => {
+    setEditing(null);
     // 恢复上次未提交的草稿（仅当前账号）
     try {
       const draft = JSON.parse(localStorage.getItem(draftKey) ?? 'null') as DraftValues | null;
@@ -77,16 +80,34 @@ export default function BacklogPage() {
     setModalOpen(true);
   };
 
+  const openEdit = (t: TaskInfo) => {
+    setEditing(t);
+    form.setFieldsValue({ projectId: t.projectId, title: t.title, description: t.description, autoMerge: t.autoMerge });
+    setModalOpen(true);
+  };
+
   const saveDraft = () => {
-    if (!username) return;
+    if (!username || editing) return; // 编辑模式不写草稿缓存
     const values = form.getFieldsValue() as DraftValues;
     const empty = !values.title?.trim() && !values.description?.trim();
     if (empty) localStorage.removeItem(draftKey);
     else localStorage.setItem(draftKey, JSON.stringify(values));
   };
 
-  const create = async (v: { projectId: string; title: string; description?: string; autoMerge?: boolean }) => {
+  const submit = async (v: { projectId: string; title: string; description?: string; autoMerge?: boolean }) => {
     try {
+      if (editing) {
+        const t = await api.patch<TaskInfo>(`/api/tasks/${editing.id}`, {
+          title: v.title.trim(),
+          description: v.description ?? '',
+          autoMerge: v.autoMerge ?? true,
+        });
+        setTaskList((l) => l.map((x) => (x.id === t.id ? t : x)));
+        setModalOpen(false);
+        setEditing(null);
+        message.success('已保存');
+        return;
+      }
       const t = await api.post<TaskInfo>('/api/tasks', {
         projectId: v.projectId,
         title: v.title.trim(),
@@ -114,6 +135,11 @@ export default function BacklogPage() {
         message.success('已拉起 AI 解冲突会话');
       }
     } catch (e) {
+      // 任务分支已不存在：让用户选择标记失败还是视为已完成
+      if ((e as Error & { code?: string }).code === 'branch_missing') {
+        setBranchMissing(t);
+        return;
+      }
       message.error((e as Error).message);
     }
   };
@@ -201,7 +227,10 @@ export default function BacklogPage() {
                     验收{t.autoMerge ? '并合并' : '（保留分支）'}
                   </Button>
                 )}
-                {/* 除执行中外都可删除（review 也可放弃） */}
+                {/* 除执行中外都可编辑/删除（review 也可放弃） */}
+                {t.status !== 'running' && (
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(t)}>编辑</Button>
+                )}
                 {t.status !== 'running' && (
                   <Popconfirm title={`删除计划「${t.title}」？`} onConfirm={() => remove(t)}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />}>删除</Button>
@@ -224,22 +253,22 @@ export default function BacklogPage() {
       )}
 
       <Modal
-        title="添加计划"
+        title={editing ? '编辑计划' : '添加计划'}
         open={modalOpen}
-        onCancel={() => { saveDraft(); setModalOpen(false); }}
+        onCancel={() => { saveDraft(); setModalOpen(false); setEditing(null); }}
         onOk={() => form.submit()}
-        okText="加入队列"
+        okText={editing ? '保存' : '加入队列'}
         destroyOnHidden={false}
       >
         <Form
           form={form}
           layout="vertical"
-          onFinish={create}
+          onFinish={submit}
           initialValues={{ autoMerge: true }}
           onValuesChange={saveDraft}
         >
           <Form.Item name="projectId" label="项目" rules={[{ required: true, message: '请选择项目' }]}>
-            <Select options={projects.map((p) => ({ value: p.id, label: p.name }))} placeholder="选择项目" />
+            <Select options={projects.map((p) => ({ value: p.id, label: p.name }))} placeholder="选择项目" disabled={!!editing} />
           </Form.Item>
           <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
             <Input placeholder="一句话说清要做什么" />
@@ -251,6 +280,50 @@ export default function BacklogPage() {
             <Checkbox>验收后自动合并回主分支并删除任务分支</Checkbox>
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 任务分支已不存在：标记失败 或 视为已完成 */}
+      <Modal
+        title="任务分支已不存在"
+        open={!!branchMissing}
+        onCancel={() => setBranchMissing(null)}
+        footer={null}
+      >
+        <Typography.Paragraph>
+          分支 <Typography.Text code>{branchMissing?.branch}</Typography.Text> 可能已被手动删除，无法合并。
+          你可以把任务标记为失败，或在确认改动已妥善处理的前提下直接视为已完成（不会再合并）。
+        </Typography.Paragraph>
+        <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+          <Button
+            danger
+            onClick={async () => {
+              const t = branchMissing!;
+              setBranchMissing(null);
+              try {
+                await api.post(`/api/tasks/${t.id}/fail`, { reason: `分支 ${t.branch} 已不存在，人工标记失败` });
+              } catch (e) {
+                message.error((e as Error).message);
+              }
+            }}
+          >
+            标记失败
+          </Button>
+          <Button
+            type="primary"
+            onClick={async () => {
+              const t = branchMissing!;
+              setBranchMissing(null);
+              try {
+                await api.post(`/api/tasks/${t.id}/complete`, { force: true });
+                message.success('已视为完成（未合并）');
+              } catch (e) {
+                message.error((e as Error).message);
+              }
+            }}
+          >
+            视为已完成
+          </Button>
+        </Space>
       </Modal>
     </div>
   );

@@ -35,6 +35,8 @@ export const projectsDir = process.env.PROJECTS_DIR ?? path.join(config.dataDir,
 export const dbDir = path.join(config.dataDir, 'db');
 /** 应用自管的 SSH key 目录（git clone/push 用） */
 export const sshKeysDir = path.join(config.dataDir, 'ssh-keys');
+/** 聊天附件目录：<uploadsDir>/<sessionId>/<file> */
+export const uploadsDir = path.join(config.dataDir, 'uploads');
 // 显式配置的 PROJECTS_DIR 不存在时直接报错（防手滑写错路径后静默建错目录）
 if (process.env.PROJECTS_DIR && !fs.existsSync(projectsDir)) {
   throw new Error(`PROJECTS_DIR 不存在: ${projectsDir}`);
@@ -42,3 +44,4 @@ if (process.env.PROJECTS_DIR && !fs.existsSync(projectsDir)) {
 fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(dbDir, { recursive: true });
 fs.mkdirSync(sshKeysDir, { recursive: true });
+fs.mkdirSync(uploadsDir, { recursive: true });

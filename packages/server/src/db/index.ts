@@ -108,6 +108,10 @@ const migrations: string[] = [
     value TEXT NOT NULL
   );
   `,
+  // v8: 功能条目改进点 —— 每个归档的会话/任务带一条 AI 总结
+  `
+  ALTER TABLE feature_items ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export function migrate() {
