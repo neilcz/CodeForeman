@@ -117,11 +117,14 @@ export function deleteProject(id: string, deleteFiles: boolean) {
  * 扫描项目根目录：每个一级子文件夹注册为一个项目。
  * 已注册（path 唯一）的跳过；隐藏目录、软链跳过；非 git 仓库原样保留。
  * 新发现的项目归属 admin，默认私有（宁漏共享不漏隐私）。
+ * prune=true 时顺带清理磁盘上已不存在的项目（会话解绑保留，任务/功能随项目删除；
+ * 仅手动触发用——启动自动扫描不 prune，避免目录临时不可用时误清数据）。
  */
-export function scanProjectsDir(): { added: ProjectInfo[]; skipped: number } {
+export function scanProjectsDir(opts?: { prune?: boolean }): { added: ProjectInfo[]; skipped: number; removed: string[] } {
   const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1").get() as
     { id: string } | undefined;
   const added: ProjectInfo[] = [];
+  const removed: string[] = [];
   let skipped = 0;
 
   for (const e of fs.readdirSync(projectsDir, { withFileTypes: true })) {
@@ -138,7 +141,16 @@ export function scanProjectsDir(): { added: ProjectInfo[]; skipped: number } {
     ).run(id, e.name, full, admin?.id ?? null, Date.now());
     added.push(getProject(id)!);
   }
-  return { added, skipped };
+
+  if (opts?.prune) {
+    const all = db.prepare('SELECT id, name, path FROM projects').all() as { id: string; name: string; path: string }[];
+    for (const p of all) {
+      if (fs.existsSync(p.path)) continue;
+      deleteProject(p.id, false);
+      removed.push(p.name);
+    }
+  }
+  return { added, skipped, removed };
 }
 
 /** 对未初始化的项目目录执行 git init */

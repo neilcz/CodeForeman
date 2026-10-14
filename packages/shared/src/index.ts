@@ -46,6 +46,12 @@ export interface SessionInfo {
   status: 'idle' | 'running' | 'error';
   /** Claude CLI 侧的 session id，用于 resume；首轮 init 前为 null */
   claudeSessionId: string | null;
+  /** 已存为计划（有任务从本会话产生）；planTitle 为最新一条计划标题 */
+  planned?: boolean;
+  planTitle?: string | null;
+  /** 已归档到功能演进；archiveFeatureTitle 为归档到的功能名 */
+  archived?: boolean;
+  archiveFeatureTitle?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -119,6 +125,8 @@ export interface SshKeyInfo {
  * - strict：编辑自动放行，Bash 等操作都需网页确认（最早的行为）
  * - allow-except-delete：除删除文件外全部自动放行（默认）
  * - allow-all：全部自动放行，慎用
+ * 注意：ExitPlanMode（方案确认）/ AskUserQuestion（提问）这类专门收集人工决定的工具，
+ * 除 allow-all 外一律转人工确认，否则「先给方案我同意后再执行」会被秒批自动执行。
  */
 export type PermissionPolicy = 'strict' | 'allow-except-delete' | 'allow-all';
 
@@ -130,6 +138,41 @@ export interface InstructionItem {
   id: string;
   text: string;
   enabled: boolean;
+}
+
+/**
+ * 密钥发送方式：
+ * - bearer：写 ANTHROPIC_AUTH_TOKEN（Authorization: Bearer），Kimi/DeepSeek 等第三方网关
+ * - api-key：写 ANTHROPIC_API_KEY（x-api-key），Anthropic 官方 API
+ * 官方 API 同时带两种凭据会被拒，故只设其中一个，另一个从子进程环境里删掉。
+ */
+export type ClaudeAuthStyle = 'bearer' | 'api-key';
+
+/**
+ * Claude 接入配置（可保存多套、选一套生效）。读取接口永不回传 apiKey 明文，只给 hasApiKey——
+ * 设置页编辑时密钥留空即表示沿用已存密钥。
+ */
+export interface ClaudeProfileInfo {
+  id: string;
+  name: string;
+  /** 主模型名；同时覆盖 Haiku/Sonnet/Opus 等别名与子代理模型，留空=沿用服务器 .env */
+  model: string;
+  /** 留空=沿用服务器 .env 的 ANTHROPIC_BASE_URL */
+  baseUrl: string;
+  authStyle: ClaudeAuthStyle;
+  hasApiKey: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 保存配置的入参：apiKey 省略 = 保持原值不变，空串 = 清空 */
+export interface ClaudeProfileInput {
+  id?: string;
+  name: string;
+  model?: string;
+  baseUrl?: string;
+  authStyle?: ClaudeAuthStyle;
+  apiKey?: string;
 }
 
 // ---------- 客户端 → 服务端 ----------
@@ -149,7 +192,13 @@ export type ClientMessage =
   | { type: 'session.unsubscribe'; sessionId: string }
   | { type: 'chat.send'; sessionId: string; text: string; attachments?: AttachmentInfo[] }
   | { type: 'chat.interrupt'; sessionId: string }
-  | { type: 'permission.respond'; sessionId: string; requestId: string; allow: boolean };
+  | {
+      type: 'permission.respond'; sessionId: string; requestId: string; allow: boolean;
+      /** AskUserQuestion 的回答：{ 问题原文: 选中项 }，allow=true 时并入 updatedInput 回传 */
+      answers?: Record<string, string>;
+      /** 打回/拒绝原因（如 ExitPlanMode 打回意见），作为 deny message 回传给 Claude */
+      denyMessage?: string;
+    };
 
 // ---------- 服务端 → 客户端 ----------
 
@@ -157,7 +206,8 @@ export type ServerMessage =
   | { type: 'server.hello'; version: string; sessions: SessionInfo[] }
   | { type: 'session.created'; session: SessionInfo }
   | { type: 'session.updated'; session: SessionInfo }
-  | { type: 'session.status'; sessionId: string; status: SessionInfo['status'] }
+  /** updatedAt 为服务端本次写库值：前端据此重排侧栏列表（否则新消息不会把会话顶到最前） */
+  | { type: 'session.status'; sessionId: string; status: SessionInfo['status']; updatedAt: number }
   /** Claude 原始事件（SDK message），同时已落库；id 为 messages 表行 id，用于重连去重/增量补拉 */
   | { type: 'claude.event'; sessionId: string; event: unknown; id?: number; ts?: number }
   | { type: 'chat.done'; sessionId: string }

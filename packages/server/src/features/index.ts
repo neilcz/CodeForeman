@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { FeatureInfo, FeatureItemInfo } from '@codeforeman/shared';
 import { oneShotText } from '../ai.js';
+import { sessionManager } from '../sessions/manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -101,6 +102,8 @@ export function linkItem(featureId: string, kind: 'session' | 'task', refId: str
   db.prepare('UPDATE features SET updated_at = ? WHERE id = ?').run(Date.now(), featureId);
   // 已归档过的会话再次归档 = 刷新改进点（幂等更新，不产生重复条目）
   if (kind === 'session') {
+    // 会话的「已归档」标记变了，推给各端刷新列表
+    sessionManager.pushUpdated(refId);
     summarizeSessionItem(featureId, refId).catch((e) => console.error('[features] 改进点生成失败', refId, e));
   }
 }

@@ -91,15 +91,17 @@ export function getTask(id: string): TaskInfo | null {
 
 export function createTask(opts: {
   projectId: string; title: string; description?: string; source?: 'manual' | 'chat'; autoMerge?: boolean;
+  /** 「存为计划」时记录来源会话 id，会话列表据此显示「已存计划」标记 */
+  originSessionId?: string;
 }): TaskInfo {
   if (!getProject(opts.projectId)) throw new Error('project not found');
   const id = randomUUID();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, description, source, status, auto_merge, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+    `INSERT INTO tasks (id, project_id, title, description, source, status, auto_merge, origin_session_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
   ).run(id, opts.projectId, opts.title, opts.description ?? '', opts.source ?? 'manual',
-    opts.autoMerge === false ? 0 : 1, now, now);
+    opts.autoMerge === false ? 0 : 1, opts.originSessionId ?? null, now, now);
   return getTask(id)!;
 }
 
@@ -117,7 +119,10 @@ export function deleteTask(id: string) {
   const task = getTask(id);
   if (!task) throw new Error('task not found');
   if (task.status === 'running') throw new Error('执行中的任务不可删除');
+  // 「已存计划」标记依赖 origin_session_id：先记下来源会话，删完推给各端刷新列表
+  const origin = db.prepare('SELECT origin_session_id AS sid FROM tasks WHERE id = ?').get(id) as { sid: string | null } | undefined;
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+  if (origin?.sid) sessionManager.pushUpdated(origin.sid);
 }
 
 // ---------- 执行编排 ----------

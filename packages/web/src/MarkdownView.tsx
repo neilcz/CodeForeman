@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -34,8 +35,9 @@ interface Props {
  * Markdown 渲染：
  * - 行内代码若像文件路径（如 `docs/01-产品功能文档.md`）→ 渲染为可点击链接
  * - 相对路径的 markdown 链接同样视为文件链接；http(s) 链接新窗口打开
+ * memo：text 不变时跳过重渲染（ReactMarkdown 每次渲染都会全量重解析，开销大）
  */
-export default function MarkdownView({ text, onFileClick }: Props) {
+function MarkdownView({ text, onFileClick }: Props) {
   return (
     <div className="md-body">
       <ReactMarkdown
@@ -68,3 +70,5 @@ export default function MarkdownView({ text, onFileClick }: Props) {
     </div>
   );
 }
+
+export default memo(MarkdownView);

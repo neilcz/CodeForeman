@@ -1,12 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { query, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
-import { autoAllow, instructionPrompt } from '../settings/index.js';
+import { autoAllow, claudeSpawnOptions, instructionPrompt, INTERACTIVE_TOOLS } from '../settings/index.js';
 
 export interface PermissionRequestEvent {
   requestId: string;
   toolName: string;
   input: Record<string, unknown>;
+}
+
+/** 前端确认结果的可选附加信息 */
+export interface PermissionResponseOpts {
+  /** AskUserQuestion 的回答（{ 问题原文: 选项 }），allow 时并入 updatedInput 回传 */
+  answers?: Record<string, string>;
+  /** 打回/拒绝原因（如 ExitPlanMode 打回意见），作为 deny message 回传给 Claude */
+  denyMessage?: string;
 }
 
 export interface ClaudeSessionCallbacks {
@@ -32,7 +40,7 @@ export interface ClaudeSessionCallbacks {
 export class ClaudeSession {
   private queue: SDKUserMessage[] = [];
   private wakeup: (() => void) | null = null;
-  private permissionResolvers = new Map<string, (allow: boolean) => void>();
+  private permissionResolvers = new Map<string, (allow: boolean, opts?: PermissionResponseOpts) => void>();
   private started = false;
   private closed = false;
   private abortController: AbortController | null = null;
@@ -61,11 +69,11 @@ export class ClaudeSession {
   }
 
   /** 前端权限确认结果回传 */
-  respondPermission(requestId: string, allow: boolean): boolean {
+  respondPermission(requestId: string, allow: boolean, opts?: PermissionResponseOpts): boolean {
     const resolve = this.permissionResolvers.get(requestId);
     if (!resolve) return false;
     this.permissionResolvers.delete(requestId);
-    resolve(allow);
+    resolve(allow, opts);
     this.cb.onPermissionResolved(requestId, allow);
     return true;
   }
@@ -85,6 +93,8 @@ export class ClaudeSession {
           cwd: this.opts.cwd,
           resume: this.opts.resume ?? undefined,
           abortController: this.abortController,
+          // 生效的 Claude 接入配置（设置页可切多套）：进程启动时取一次；未选配置时不传，一切照旧
+          ...claudeSpawnOptions(),
           // 全局指令（设置页维护：环境约束、团队约定等），追加到默认系统提示词。
           // 进程启动时读取一次；改指令后已运行的进程不受影响，下次重起的进程生效
           systemPrompt: { type: 'preset', preset: 'claude_code', append: instructionPrompt() },
@@ -125,6 +135,11 @@ export class ClaudeSession {
 
   close() {
     this.closed = true;
+    // 唤醒阻塞中的消息流：generator 得以 return → 输入流结束 → CLI 子进程退出。
+    // 只置 closed 是不够的：它正停在 await wakeup 上，没人唤醒就永远不会 return，
+    // 进程会一直挂着（常驻会话回收不掉的根因）。abort 是兜底，防止卡在读流/权限等待里。
+    this.wakeup?.();
+    this.abortController?.abort();
     for (const resolve of this.permissionResolvers.values()) resolve(false);
     this.permissionResolvers.clear();
   }
@@ -146,11 +161,14 @@ export class ClaudeSession {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<PermissionResult> {
-    // 按全局权限策略自动放行（默认：除删除文件外全部通过），不走人工确认
+    // 按全局权限策略自动放行（默认：除删除文件、方案确认/提问外全部通过），不走人工确认
     if (autoAllow(toolName, input)) {
       return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
     const requestId = randomUUID();
+    // 方案确认/提问用户可能在逐条阅读，给比普通命令更长的确认窗口
+    const isInteractive = INTERACTIVE_TOOLS.has(toolName);
+    const timeoutMs = isInteractive ? config.interactivePermissionTimeoutMs : config.permissionTimeoutMs;
     return new Promise<PermissionResult>((resolve) => {
       let settled = false;
       const done = (result: PermissionResult) => {
@@ -163,22 +181,41 @@ export class ClaudeSession {
 
       const timer = setTimeout(() => {
         this.permissionResolvers.delete(requestId);
-        done({ behavior: 'deny', message: '审批超时（120s），自动拒绝' });
-      }, config.permissionTimeoutMs);
+        // 超时必须留痕：清掉前端确认卡片 + 在对话流里落一条系统消息（会持久化），
+        // 否则像结尾清理临时文件的 rm 超时一样，对话里什么都看不到
+        this.cb.onPermissionResolved(requestId, false);
+        this.cb.onEvent({
+          type: 'system',
+          subtype: 'permission.timeout',
+          message: `权限确认超时（${Math.round(timeoutMs / 60000)} 分钟无响应），已自动拒绝：${toolName} — ${inputBrief(input)}`,
+        });
+        done({ behavior: 'deny', message: `审批超时（${Math.round(timeoutMs / 1000)}s 无响应），自动拒绝` });
+      }, timeoutMs);
 
       const onAbort = () => {
         this.permissionResolvers.delete(requestId);
+        this.cb.onPermissionResolved(requestId, false);
         done({ behavior: 'deny', message: '会话已中断' });
       };
       signal.addEventListener('abort', onAbort);
 
-      this.permissionResolvers.set(requestId, (allow) => {
+      this.permissionResolvers.set(requestId, (allow, opts) => {
         done(allow
-          ? { behavior: 'allow', updatedInput: input }
-          : { behavior: 'deny', message: '用户拒绝' });
+          ? { behavior: 'allow', updatedInput: opts?.answers ? { ...input, answers: opts.answers } : input }
+          : { behavior: 'deny', message: opts?.denyMessage?.trim() || '用户拒绝' });
       });
 
       this.cb.onPermissionRequest({ requestId, toolName, input });
     });
   }
+}
+
+/** 权限请求的输入摘要（用于超时留痕消息，取命令/文件路径等关键参数） */
+function inputBrief(input: Record<string, unknown>): string {
+  for (const k of ['command', 'file_path', 'path', 'description']) {
+    const v = input[k];
+    if (typeof v === 'string' && v) return v.length > 120 ? `${v.slice(0, 120)}…` : v;
+  }
+  const s = JSON.stringify(input);
+  return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 }

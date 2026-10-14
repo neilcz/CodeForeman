@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { db } from '../db/index.js';
-import { ClaudeSession } from '../claude/session.js';
+import { ClaudeSession, type PermissionResponseOpts } from '../claude/session.js';
 import { uploadsDir } from '../config.js';
+import { claudeEnvRev, claudeSpawnOptions } from '../settings/index.js';
 import type { AttachmentInfo, ServerMessage, SessionInfo } from '@codeforeman/shared';
 
 type Listener = (msg: ServerMessage) => void;
@@ -59,6 +60,8 @@ const SESSION_SELECT = `
  */
 export class SessionManager {
   private live = new Map<string, ClaudeSession>();
+  /** 各常驻进程 spawn 时的接入配置版本（见 settings/claude.ts claudeEnvRev）：不一致就要换新进程 */
+  private liveEnvRev = new Map<string, number>();
   private lastActivity = new Map<string, number>();
   private subscribers = new Map<string, Set<Listener>>();
   private turnDoneListeners = new Set<(sessionId: string) => void>();
@@ -86,7 +89,24 @@ export class SessionManager {
   closeSession(id: string) {
     this.live.get(id)?.close();
     this.live.delete(id);
+    this.liveEnvRev.delete(id);
     this.lastActivity.delete(id);
+  }
+
+  /**
+   * 生效的 Claude 接入配置变了：关掉空闲会话的常驻进程，让它们下次发言按新配置重新 spawn
+   * （会话历史在库里，凭 claude_session_id resume 接续，用户无感）。
+   * 正在跑的轮次不动——进程环境在 spawn 时就固定了，只有重启进程才会换配置。
+   * 返回被回收的会话数（设置页提示用）。
+   */
+  applyClaudeEnvChange(): number {
+    let closed = 0;
+    for (const id of [...this.live.keys()]) {
+      if (this.get(id)?.status === 'running') continue;
+      this.closeSession(id);
+      closed++;
+    }
+    return closed;
   }
 
   /** 优雅停机：关闭所有 Claude 进程 */
@@ -113,12 +133,52 @@ export class SessionManager {
           WHERE (s.project_id IS NULL OR s.project_id IN
             (SELECT id FROM projects WHERE owner_id = ? OR visibility = 'public'))
           ORDER BY s.updated_at DESC`).all(user.id) as SessionRow[];
-    return rows.map(toInfo);
+    return this.annotateFlags(rows.map(toInfo));
   }
 
   get(id: string): SessionInfo | null {
     const row = db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as SessionRow | undefined;
-    return row ? toInfo(row) : null;
+    return row ? this.annotateFlags([toInfo(row)])[0] : null;
+  }
+
+  /**
+   * 批量标注「已存计划 / 已归档」标记（两条 IN 查询，避免逐行 N+1）：
+   * 已存计划 = 存在 origin_session_id 指向该会话的任务；已归档 = feature_items 有该会话条目
+   */
+  private annotateFlags(infos: SessionInfo[]): SessionInfo[] {
+    if (infos.length === 0) return infos;
+    const ids = infos.map((i) => i.id);
+    const ph = ids.map(() => '?').join(',');
+    // 每组取最新一条（ORDER BY DESC + 首次写入生效）
+    const plannedRows = db.prepare(
+      `SELECT origin_session_id AS sid, title FROM tasks
+       WHERE origin_session_id IN (${ph}) ORDER BY created_at DESC`,
+    ).all(...ids) as { sid: string; title: string }[];
+    const archivedRows = db.prepare(
+      `SELECT fi.ref_id AS sid, f.title FROM feature_items fi
+       JOIN features f ON f.id = fi.feature_id
+       WHERE fi.kind = 'session' AND fi.ref_id IN (${ph})
+       ORDER BY fi.created_at DESC`,
+    ).all(...ids) as { sid: string; title: string }[];
+    const planTitle = new Map<string, string>();
+    for (const r of plannedRows) if (!planTitle.has(r.sid)) planTitle.set(r.sid, r.title);
+    const featureTitle = new Map<string, string>();
+    for (const r of archivedRows) if (!featureTitle.has(r.sid)) featureTitle.set(r.sid, r.title);
+    for (const i of infos) {
+      i.planned = planTitle.has(i.id);
+      i.planTitle = planTitle.get(i.id) ?? null;
+      i.archived = featureTitle.has(i.id);
+      i.archiveFeatureTitle = featureTitle.get(i.id) ?? null;
+    }
+    return infos;
+  }
+
+  /** 归档/存计划后推送最新的会话信息（planned/archived 标记变化复用 session.updated 通道） */
+  pushUpdated(id: string) {
+    const info = this.get(id);
+    if (!info) return;
+    this.broadcast(id, { type: 'session.updated', session: info });
+    this.broadcastGlobal({ type: 'session.updated', session: info });
   }
 
   /** 历史事件（用于前端刷新/断线回放） */
@@ -146,7 +206,13 @@ export class SessionManager {
   /** 懒启动：首条消息时才真正 spawn Claude 进程 */
   private ensureLive(id: string): ClaudeSession {
     let session = this.live.get(id);
-    if (session) return session;
+    if (session) {
+      // 生效的 Claude 接入配置换过了：进程环境在 spawn 时定死，留着它就永远用旧配置
+      // （网关挂掉 → 切新配置 → 这个会话还在用旧的）。空闲时立刻换新进程（凭 resume 接续），
+      // 正在跑的轮次不打断——那轮结束后的下一次发言会走到这里，再换。
+      if (this.liveEnvRev.get(id) === claudeEnvRev() || this.get(id)?.status === 'running') return session;
+      this.closeSession(id);
+    }
 
     const info = this.get(id);
     if (!info) throw new Error(`session ${id} not found`);
@@ -155,15 +221,23 @@ export class SessionManager {
       throw new Error(`会话工作目录不存在：${info.cwd}（可能是容器时期创建的遗留会话，请新建会话）`);
     }
 
+    // 本进程实例的归属标记：旧进程可能晚于新进程结束（如切换配置时主动关闭 + 立刻重开），
+    // 回调里据此判断「我是否还是当前注册的那个」——否则旧进程的收尾回调会把新进程从表里删掉、
+    // 把它的状态改成 idle、把它的事件混进对话
+    let instance: ClaudeSession | null = null;
+    const stale = () => this.live.get(id) !== instance;
+
     session = new ClaudeSession(
       { cwd: info.cwd, resume: info.claudeSessionId },
       {
         onEvent: (event) => {
+          if (stale()) return;
           this.lastActivity.set(id, Date.now());
-          // system 事件只保留 init（捕获 session id）和 interrupted（中断标记），
-          // thinking_tokens 等遥测噪声不落库不广播
+          // system 事件只保留 init（捕获 session id）、interrupted（中断标记）
+          // 和 permission.timeout（审批超时留痕），thinking_tokens 等遥测噪声不落库不广播
           const e = event as { type: string; subtype?: string };
-          if (e.type === 'system' && e.subtype !== 'init' && e.subtype !== 'interrupted') return;
+          if (e.type === 'system'
+            && e.subtype !== 'init' && e.subtype !== 'interrupted' && e.subtype !== 'permission.timeout') return;
           const now = Date.now();
           const info = db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
             .run(id, JSON.stringify(event), now);
@@ -171,14 +245,17 @@ export class SessionManager {
           this.broadcast(id, { type: 'claude.event', sessionId: id, event, id: Number(info.lastInsertRowid), ts: now });
         },
         onSessionId: (claudeSessionId) => {
+          if (stale()) return;
           db.prepare('UPDATE sessions SET claude_session_id = ? WHERE id = ?').run(claudeSessionId, id);
         },
         onTurnDone: () => {
+          if (stale()) return;
           this.setStatus(id, 'idle');
           this.broadcast(id, { type: 'chat.done', sessionId: id });
           for (const fn of this.turnDoneListeners) fn(id);
         },
         onPermissionRequest: (req) => {
+          if (stale()) return;
           this.broadcast(id, {
             type: 'permission.request',
             sessionId: id,
@@ -188,23 +265,28 @@ export class SessionManager {
           });
         },
         onPermissionResolved: (requestId, allow) => {
+          if (stale()) return;
           this.broadcast(id, { type: 'permission.resolved', requestId, allow });
         },
         onError: (err) => {
+          if (stale()) return;
           this.setStatus(id, 'error');
           this.broadcast(id, { type: 'chat.error', sessionId: id, error: err.message });
           this.live.delete(id);
         },
         onEnded: () => {
           // 进程流终止（中断/正常退出）：状态复位，下次发言凭 resume 重启进程
+          if (stale()) return;
           this.live.delete(id);
           this.setStatus(id, 'idle');
           this.broadcast(id, { type: 'chat.done', sessionId: id });
         },
       },
     );
+    instance = session;
     session.start();
     this.live.set(id, session);
+    this.liveEnvRev.set(id, claudeEnvRev());
     return session;
   }
 
@@ -223,6 +305,8 @@ export class SessionManager {
     const ins = db.prepare('INSERT INTO messages (session_id, event, created_at) VALUES (?, ?, ?)')
       .run(id, JSON.stringify(userEvent), now);
     this.broadcast(id, { type: 'claude.event', sessionId: id, event: userEvent, id: Number(ins.lastInsertRowid), ts: now });
+    // 新消息 = 本会话刚有活动：推一次完整会话信息，各端侧栏立刻把它排到最前
+    this.pushUpdated(id);
     session.send(attachments?.length ? `${text}\n\n${attachmentPrompt(id, attachments)}` : text);
 
     // 首次发言且无标题 → 异步让 Claude 概括需求生成标题
@@ -240,7 +324,7 @@ export class SessionManager {
       let text = '';
       for await (const msg of query({
         prompt: `把以下用户需求概括成 12 字以内的会话标题，只输出标题本身，不要标点：\n\n${firstMessage.slice(0, 500)}`,
-        options: { cwd: info.cwd },
+        options: { cwd: info.cwd, ...claudeSpawnOptions() },
       })) {
         const m = msg as { type: string; message?: { content?: { type: string; text?: string }[] } };
         if (m.type === 'assistant') {
@@ -287,7 +371,7 @@ export class SessionManager {
     ].join('\n');
 
     let text = '';
-    for await (const msg of query({ prompt, options: { cwd: info.cwd } })) {
+    for await (const msg of query({ prompt, options: { cwd: info.cwd, ...claudeSpawnOptions() } })) {
       const m = msg as { type: string; message?: { content?: { type: string; text?: string }[] } };
       if (m.type === 'assistant') {
         for (const b of m.message?.content ?? []) {
@@ -335,8 +419,8 @@ export class SessionManager {
     return omitted + kept.join('\n\n');
   }
 
-  respondPermission(sessionId: string, requestId: string, allow: boolean): boolean {
-    return this.live.get(sessionId)?.respondPermission(requestId, allow) ?? false;
+  respondPermission(sessionId: string, requestId: string, allow: boolean, opts?: PermissionResponseOpts): boolean {
+    return this.live.get(sessionId)?.respondPermission(requestId, allow, opts) ?? false;
   }
 
   /** 中断会话当前轮次 */
@@ -385,10 +469,12 @@ export class SessionManager {
   }
 
   private setStatus(id: string, status: SessionInfo['status']) {
-    db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(status, Date.now(), id);
-    this.broadcast(id, { type: 'session.status', sessionId: id, status });
-    // 全局广播：未订阅该会话的页面（侧边栏/其他会话）也要实时更新状态
-    this.broadcastGlobal({ type: 'session.status', sessionId: id, status });
+    const updatedAt = Date.now();
+    db.prepare('UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?').run(status, updatedAt, id);
+    this.broadcast(id, { type: 'session.status', sessionId: id, status, updatedAt });
+    // 全局广播：未订阅该会话的页面（侧边栏/其他会话）也要实时更新状态；
+    // 带上 updatedAt 让侧边栏顺势重排（否则新消息不会把会话顶到最前）
+    this.broadcastGlobal({ type: 'session.status', sessionId: id, status, updatedAt });
   }
 }
 

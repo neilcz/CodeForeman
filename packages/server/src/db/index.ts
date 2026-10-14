@@ -112,6 +112,11 @@ const migrations: string[] = [
   `
   ALTER TABLE feature_items ADD COLUMN summary TEXT NOT NULL DEFAULT '';
   `,
+  // v9: 任务来源会话 —— 「存为计划」记录产生它的会话（会话列表「已存计划」标记用）
+  `
+  ALTER TABLE tasks ADD COLUMN origin_session_id TEXT;
+  CREATE INDEX IF NOT EXISTS idx_tasks_origin_session ON tasks(origin_session_id);
+  `,
 ];
 
 export function migrate() {

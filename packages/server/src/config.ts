@@ -21,8 +21,10 @@ export const config = {
   version: '0.1.0',
   /** 当前接入的模型端点（仅展示用，不泄露 token） */
   endpoint: process.env.ANTHROPIC_BASE_URL ?? null,
-  /** 权限确认等待超时：超时自动拒绝，防止进程无限挂起 */
+  /** 权限确认等待超时：超时自动拒绝（拒绝必留痕，见 session.ts），防止进程无限挂起 */
   permissionTimeoutMs: 120_000,
+  /** 方案确认/提问等交互类确认的超时：用户可能在读方案，给宽一些 */
+  interactivePermissionTimeoutMs: 600_000,
 } as const;
 
 /**

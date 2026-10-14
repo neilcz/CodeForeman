@@ -8,7 +8,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import pino from 'pino';
 import type { WebSocket } from 'ws';
-import type { AttachmentInfo, ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
+import type { AttachmentInfo, ClaudeProfileInput, ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
 import { config, uploadsDir } from './config.js';
 import { db } from './db/index.js';
 import { detectClaude } from './claude/detect.js';
@@ -147,18 +147,19 @@ app.get('/api/health', async (): Promise<HealthStatus> => ({
   status: 'ok',
   version: config.version,
   claudeAvailable: claudeVersion !== null,
-  endpoint: config.endpoint,
+  // 当前实际生效的端点：设置页选了配置就以它为准，否则是服务器 .env 里的
+  endpoint: settings.activeBaseUrl() ?? config.endpoint,
 }));
 
 // ---------- 项目 ----------
 
 app.get('/api/projects', async (req) => projects.listProjects(req.user!));
 
-/** 手动触发目录扫描（仅 admin：项目根目录是服务器全局资源） */
+/** 手动触发目录扫描：新增目录入库 + 清理磁盘上已不存在的项目（仅 admin：项目根目录是服务器全局资源） */
 app.post('/api/projects/scan', async (req, reply) => {
   if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
-  const { added, skipped } = projects.scanProjectsDir();
-  return { added: added.length, skipped, projects: added };
+  const { added, skipped, removed } = projects.scanProjectsDir({ prune: true });
+  return { added: added.length, skipped, removed, projects: added };
 });
 
 /** 对未初始化的项目目录执行 git init */
@@ -299,21 +300,40 @@ app.post('/api/projects/:id/git/commit', async (req, reply) => {
 
 // ---------- 全局设置（读取人人可；修改仅 admin） ----------
 
-app.get('/api/settings', async () => ({
-  permissionPolicy: settings.getPermissionPolicy(),
-  instructions: settings.getInstructions(),
-}));
+function settingsSnapshot() {
+  return {
+    permissionPolicy: settings.getPermissionPolicy(),
+    instructions: settings.getInstructions(),
+    // 配置列表不含密钥（只有 hasApiKey），因此非管理员也可读
+    claudeProfiles: settings.listClaudeProfiles(),
+    activeClaudeProfileId: settings.getActiveClaudeProfileId(),
+  };
+}
+
+app.get('/api/settings', async () => settingsSnapshot());
 
 app.put('/api/settings', async (req, reply) => {
   if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
-  const body = (req.body ?? {}) as { permissionPolicy?: PermissionPolicy; instructions?: InstructionItem[] };
-  if (body.permissionPolicy === undefined && body.instructions === undefined) {
-    return reply.code(400).send({ error: 'permissionPolicy 或 instructions 至少传一个' });
+  const body = (req.body ?? {}) as {
+    permissionPolicy?: PermissionPolicy;
+    instructions?: InstructionItem[];
+    claudeProfiles?: ClaudeProfileInput[];
+    activeClaudeProfileId?: string | null;
+  };
+  if (body.permissionPolicy === undefined && body.instructions === undefined
+    && body.claudeProfiles === undefined && body.activeClaudeProfileId === undefined) {
+    return reply.code(400).send({ error: '没有需要保存的设置项' });
   }
   try {
+    // 配置改动是否需要换新进程：比对生效配置的接入变量版本（编辑非生效配置、只改名不会白重启）
+    const revBefore = settings.claudeEnvRev();
     if (body.permissionPolicy !== undefined) settings.setPermissionPolicy(body.permissionPolicy);
     if (body.instructions !== undefined) settings.setInstructions(body.instructions);
-    return { permissionPolicy: settings.getPermissionPolicy(), instructions: settings.getInstructions() };
+    if (body.claudeProfiles !== undefined) settings.saveClaudeProfiles(body.claudeProfiles);
+    if (body.activeClaudeProfileId !== undefined) settings.setActiveClaudeProfile(body.activeClaudeProfileId);
+    const envChanged = settings.claudeEnvRev() !== revBefore;
+    const restarted = envChanged ? sessionManager.applyClaudeEnvChange() : 0;
+    return { ...settingsSnapshot(), envChanged, restartedSessions: restarted };
   } catch (err) {
     return reply.code(400).send({ error: (err as Error).message });
   }
@@ -491,17 +511,21 @@ app.get('/api/tasks', async (req) => {
 });
 
 app.post('/api/tasks', async (req, reply) => {
-  const body = req.body as { projectId?: string; title?: string; description?: string; source?: 'manual' | 'chat'; autoMerge?: boolean };
+  const body = req.body as { projectId?: string; title?: string; description?: string; source?: 'manual' | 'chat'; autoMerge?: boolean; originSessionId?: string };
   if (!body.projectId || !body.title?.trim()) return reply.code(400).send({ error: 'projectId 和 title 必填' });
   if (!projects.canAccess(req.user!, body.projectId)) return reply.code(403).send({ error: '无权访问该项目' });
   try {
-    return tasks.createTask({
+    const task = tasks.createTask({
       projectId: body.projectId,
       title: body.title.trim(),
       description: body.description,
       source: body.source,
       autoMerge: body.autoMerge,
+      originSessionId: body.originSessionId,
     });
+    // 来源会话的「已存计划」标记变了，推给各端刷新列表
+    if (body.originSessionId) sessionManager.pushUpdated(body.originSessionId);
+    return task;
   } catch (err) {
     return reply.code(400).send({ error: (err as Error).message });
   }
@@ -682,7 +706,10 @@ app.get('/ws', { websocket: true }, (socket: WebSocket, req) => {
         break;
       case 'permission.respond':
         if (!sessionAllowed(msg.sessionId)) return;
-        sessionManager.respondPermission(msg.sessionId, msg.requestId, msg.allow);
+        sessionManager.respondPermission(msg.sessionId, msg.requestId, msg.allow, {
+          answers: msg.answers,
+          denyMessage: msg.denyMessage,
+        });
         break;
     }
   });
@@ -712,7 +739,9 @@ if (fs.existsSync(webDist)) {
 }
 
 await app.listen({ port: config.port, host: config.host });
-app.log.info(`CodeForeman ready | claude: ${claudeVersion ?? 'NOT FOUND'} | endpoint: ${config.endpoint ?? 'official'}`);
+app.log.info(
+  `CodeForeman ready | claude: ${claudeVersion ?? 'NOT FOUND'} | endpoint: ${settings.activeBaseUrl() ?? config.endpoint ?? 'official'}`,
+);
 // 回填历史归档会话的 AI 改进点（异步串行，不阻塞启动）
 features.backfillSummaries().catch(() => {});
 

@@ -1,19 +1,12 @@
-import { db } from '../db/index.js';
 import type { InstructionItem, PermissionPolicy } from '@codeforeman/shared';
+import { shouldAutoAllow } from './policy.js';
+import { getSetting, setSetting } from './store.js';
+
+export { isDeleteCommand, INTERACTIVE_TOOLS } from './policy.js';
+export * from './claude.js';
 
 const DEFAULT_POLICY: PermissionPolicy = 'allow-except-delete';
 const POLICIES: PermissionPolicy[] = ['strict', 'allow-except-delete', 'allow-all'];
-
-function getSetting(key: string): string | undefined {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value;
-}
-
-function setSetting(key: string, value: string) {
-  db.prepare(
-    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-  ).run(key, value);
-}
 
 export function getPermissionPolicy(): PermissionPolicy {
   const v = getSetting('permission_policy');
@@ -73,31 +66,7 @@ export function instructionPrompt(): string | undefined {
   return parts.length ? parts.join('\n\n') : undefined;
 }
 
-/**
- * 删除类 Bash 命令探测（启发式，宁可误拦不可漏放——误拦的代价只是多一次确认）。
- * 覆盖：rm/rmdir/unlink/shred、git rm/git clean、find -delete、trash 系。
- * 已知漏网：python/node 脚本里的 rmtree 等 API 调用（无法静态识别）。
- */
-const DELETE_PATTERNS = [
-  /\brm\b/,
-  /\brmdir\b/,
-  /\bunlink\b/,
-  /\bshred\b/,
-  /\bgit\s+rm\b/,
-  /\bgit\s+clean\b/,
-  /\bfind\b[\s\S]*?\s-delete\b/,
-  /\b(gio\s+)?trash\b/,
-];
-
-export function isDeleteCommand(command: string): boolean {
-  return DELETE_PATTERNS.some((re) => re.test(command));
-}
-
-/** 按当前策略，该工具调用是否无需人工确认直接放行 */
+/** 按当前策略，该工具调用是否无需人工确认直接放行（判定逻辑见 policy.ts 纯函数） */
 export function autoAllow(toolName: string, input: Record<string, unknown>): boolean {
-  const policy = getPermissionPolicy();
-  if (policy === 'strict') return false;
-  if (policy === 'allow-all') return true;
-  // allow-except-delete：删除文件的 Bash 命令仍需确认
-  return !(toolName === 'Bash' && typeof input.command === 'string' && isDeleteCommand(input.command));
+  return shouldAutoAllow(getPermissionPolicy(), toolName, input);
 }

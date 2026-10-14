@@ -34,8 +34,11 @@ export default function ProjectsPage() {
 
   const scan = async () => {
     try {
-      const res = await api.post<{ added: number; skipped: number }>('/api/projects/scan');
-      message.success(res.added > 0 ? `新发现 ${res.added} 个项目` : '没有新目录（已注册的会跳过）');
+      const res = await api.post<{ added: number; skipped: number; removed: string[] }>('/api/projects/scan');
+      const parts: string[] = [];
+      if (res.added > 0) parts.push(`新发现 ${res.added} 个项目`);
+      if (res.removed.length > 0) parts.push(`清理 ${res.removed.length} 个已删除目录的项目（${res.removed.join('、')}）`);
+      message.success(parts.length > 0 ? parts.join('；') : '没有变化（已注册的会跳过）');
       load();
     } catch (e) {
       message.error((e as Error).message);

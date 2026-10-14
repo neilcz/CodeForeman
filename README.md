@@ -62,7 +62,8 @@
 
 **技术栈**：Node.js 22 + TypeScript 全栈 · Fastify + WebSocket · Claude Agent SDK（stream-json 协议，session 可 resume）· better-sqlite3 · React 18 + antd v5 + Ant Design X + Monaco Editor · 裸机常驻服务（launchd / systemd），Docker 可选
 
-**模型接入**：任何 Anthropic 兼容端点均可——官方订阅（宿主机 `claude login`）、Anthropic API key、或 Kimi 等第三方兼容服务（`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`）。
+**模型接入**：任何 Anthropic 兼容端点均可——官方订阅（宿主机 `claude login`）、Anthropic API key、或 Kimi 等第三方兼容服务（`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`）。设置页「Claude 接入配置」可存多套（名称 / Base URL / 认证方式 / 密钥 / 模型）并随时切换，某套网关配额用尽或不可用时即刻换另一套，无需改 `.env` 或重启服务。
+注意两者的优先级：**选中某套配置后以它为准**（服务端会关掉子进程的「用户级」settings 来源，否则本机 `~/.claude/settings.json` 里的 `env` 会覆盖掉它——那是你直接在终端用 `claude` 时的配置）；选「服务器默认」时不干预，`.env` 与本机 `~/.claude/settings.json` 按 CLI 原有规则生效。
 
 ## 部署方式：推荐裸服务，不用 Docker
 

@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claudeSpawnOptions } from './settings/index.js';
 
 /**
  * 一次性轻量文本生成（如 commit message、摘要）。
@@ -7,7 +8,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 export async function oneShotText(cwd: string, prompt: string): Promise<string | null> {
   try {
     let text = '';
-    for await (const msg of query({ prompt, options: { cwd } })) {
+    for await (const msg of query({ prompt, options: { cwd, ...claudeSpawnOptions() } })) {
       const m = msg as { type: string; message?: { content?: { type: string; text?: string }[] } };
       if (m.type === 'assistant') {
         for (const b of m.message?.content ?? []) {

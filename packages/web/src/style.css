@@ -83,6 +83,33 @@ body {
    注意 cssinjs 运行时注入的样式后加载，需更高特异性 .chat-sider .conversations 才能覆盖） */
 .chat-sider .conversations { width: 100%; padding-inline: 0; gap: 2px; }
 .chat-sider .conversations .ant-conversations-item { width: 100%; box-sizing: border-box; padding-block: 3px; }
+/* 分组标题：项目色点 + 组名 + 会话数（色点颜色由内联 style 按组名哈希给出） */
+.conv-group-label { display: inline-flex; align-items: center; gap: 6px; }
+.conv-group-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.conv-group-count { color: #71717a; font-size: 11px; margin-left: 2px; }
+/* 会话条目第二行（时间 + 状态 + 标记）：flex 均匀间距，11px 浅色 */
+.conv-item-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+/* 「更早的 N 个会话」折叠行：一行浅色小字，caret 展开时旋转 90°（不是会话条目，不参与选中态） */
+.conv-more { display: inline-flex; align-items: center; gap: 6px; color: #8c8c8c; font-size: 12px; }
+.conv-more-caret { font-size: 10px; transition: transform 0.2s; }
+.conv-more-caret.open { transform: rotate(90deg); }
+/* 列表项上的「已保存计划/已归档」图标标记（悬停显示说明） */
+.conv-flag-icon { font-size: 12px; }
+
+/* Claude 接入配置：每套一行，选中行高亮；宽屏一行放得下，窄屏自动折行 */
+.claude-profile-hint { color: #71717a; font-size: 12px; margin-left: 6px; }
+.claude-profile-row {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  border: 1px solid #303030; border-radius: 8px; padding: 10px 12px;
+}
+.claude-profile-row:has(.ant-radio-checked) { border-color: #1677ff; background: rgba(22, 119, 255, 0.06); }
+.claude-profile-row .ant-input-group-wrapper { width: auto; min-width: 0; }
+.claude-profile-row .cp-name { flex: 1 1 140px; }
+.claude-profile-row .cp-url { flex: 1 1 240px; }
+.claude-profile-row .cp-auth { flex: 0 0 132px; }
+.claude-profile-row .cp-key { flex: 1 1 220px; }
+.claude-profile-row .cp-model { flex: 0 1 200px; }
+.claude-profile-row .cp-del { margin-left: auto; }
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .chat-header {
   padding: 8px 16px; border-bottom: 1px solid #303030;
@@ -166,6 +193,15 @@ body {
   white-space: pre-wrap; word-break: break-all;
   max-height: 300px; overflow-y: auto; overflow-x: hidden;
 }
+/* 方案确认卡片：方案全文可滚动阅读，太长不撑爆消息流 */
+.perm-plan {
+  max-height: 360px; overflow-y: auto; overflow-x: hidden;
+  padding: 4px 8px 4px 0;
+}
+/* 提问卡片：多题之间留间距，选项竖排更易读 */
+.perm-questions .perm-question { margin: 8px 0; }
+.perm-question-title { font-weight: 500; margin-bottom: 4px; }
+.perm-questions .ant-checkbox-group, .perm-questions .ant-radio-group { display: flex; flex-direction: column; gap: 4px; }
 
 /* ---------- Markdown（会话气泡内） ---------- */
 .md-body > :first-child { margin-top: 0; }
