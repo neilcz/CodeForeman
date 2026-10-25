@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { App, Button, Card, Checkbox, Empty, Form, Input, List, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
 import { PlayCircleOutlined, CommentOutlined, CheckOutlined, DeleteOutlined, EditOutlined, BranchesOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
-import type { ProjectInfo, TaskInfo, TaskStatus } from '@codeforeman/shared';
+import type { ProjectInfo, TaskExecutionMode, TaskInfo, TaskStatus } from '@codeforeman/shared';
 import { api } from '../api';
 import { onWsMessage } from '../ws';
 
@@ -41,6 +41,7 @@ export default function BacklogPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<TaskInfo | null>(null);
   const [branchMissing, setBranchMissing] = useState<TaskInfo | null>(null);
+  const [executionMode, setExecutionMode] = useState<TaskExecutionMode>('parallel');
   const [username, setUsername] = useState('');
   const { message } = App.useApp();
   const [form] = Form.useForm();
@@ -52,6 +53,8 @@ export default function BacklogPage() {
   useEffect(() => {
     api.get<TaskInfo[]>('/api/tasks').then(setTaskList);
     api.get<ProjectInfo[]>('/api/projects').then(setProjects);
+    api.get<{ taskExecutionMode: TaskExecutionMode }>('/api/settings')
+      .then((s) => setExecutionMode(s.taskExecutionMode));
     api.get<{ username: string }>('/api/auth/me').then((me) => setUsername(me.username));
   }, []);
 
@@ -131,6 +134,9 @@ export default function BacklogPage() {
       if (action === 'execute' && res.snapshotted) {
         message.info(`工作区有 ${res.snapshotted} 个未提交改动，已自动快照提交`);
       }
+      if (action === 'execute' && res.status === 'queued') {
+        message.info('已加入等待队列，将按顺序自动执行');
+      }
       if (action === 'resolve-conflict') {
         message.success('已拉起 AI 解冲突会话');
       }
@@ -198,6 +204,7 @@ export default function BacklogPage() {
                 <Tag color={STATUS_COLOR[t.status]}>{STATUS_LABEL[t.status]}</Tag>
                 <Typography.Text strong>{t.title}</Typography.Text>
                 <Tag>{t.projectName}</Tag>
+                {t.executionMode && <Tag>{t.executionMode === 'serial' ? '串行' : '并行'}</Tag>}
               </Space>
               {t.description && (
                 <Typography.Paragraph type="secondary" style={{ fontSize: 13, whiteSpace: 'pre-wrap', marginBottom: 4 }}>
@@ -206,25 +213,30 @@ export default function BacklogPage() {
               )}
               {t.branch && (
                 <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-                  <BranchesOutlined /> {t.branch}{t.mergeCommit ? ` → ${t.mergeCommit}` : ''}
+                  <BranchesOutlined /> {t.branch}
+                  {t.taskCommit ? ` @ ${t.taskCommit}` : ''}{t.mergeCommit ? ` → ${t.mergeCommit}` : ''}
                 </Typography.Text>
               )}
               {t.error && <Typography.Text type="danger" style={{ fontSize: 12 }}>{t.error}</Typography.Text>}
               <Space style={{ marginTop: 8 }} wrap>
                 {(t.status === 'draft' || t.status === 'queued') && (
                   <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => act(t, 'execute')}>
-                    执行
+                    {t.status === 'queued' ? '调度' : '执行'}
                   </Button>
                 )}
-                {/* 只要有关联会话就允许打开（含 failed/review，方便排查） */}
-                {t.sessionId && t.status !== 'draft' && t.status !== 'queued' && (
-                  <Button size="small" icon={<CommentOutlined />} onClick={() => navigate(`/chat/${t.sessionId}`)}>
-                    查看会话
+                {/* 执行前可打开来源会话；执行后打开实际执行会话（来源计划两者相同） */}
+                {(t.sessionId || t.originSessionId) && (
+                  <Button
+                    size="small"
+                    icon={<CommentOutlined />}
+                    onClick={() => navigate(`/chat/${t.sessionId ?? t.originSessionId}`)}
+                  >
+                    {t.sessionId ? '查看会话' : '来源会话'}
                   </Button>
                 )}
                 {t.status === 'review' && (
                   <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => act(t, 'complete')}>
-                    验收{t.autoMerge ? '并合并' : '（保留分支）'}
+                    验收{t.executionMode === 'serial' ? '' : t.autoMerge ? '并合并' : '（保留分支）'}
                   </Button>
                 )}
                 {/* 除执行中外都可编辑/删除（review 也可放弃） */}
@@ -276,9 +288,11 @@ export default function BacklogPage() {
           <Form.Item name="description" label="详细描述（可选）">
             <Input.TextArea rows={4} placeholder="越具体 Claude 做得越准" />
           </Form.Item>
-          <Form.Item name="autoMerge" valuePropName="checked" noStyle>
-            <Checkbox>验收后自动合并回主分支并删除任务分支</Checkbox>
-          </Form.Item>
+          {executionMode === 'parallel' && (
+            <Form.Item name="autoMerge" valuePropName="checked" noStyle>
+              <Checkbox>并行任务验收后自动合并回主分支并删除任务分支</Checkbox>
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 

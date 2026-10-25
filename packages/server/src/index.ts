@@ -8,7 +8,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import pino from 'pino';
 import type { WebSocket } from 'ws';
-import type { AttachmentInfo, ClaudeProfileInput, ClientMessage, HealthStatus, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
+import type { AttachmentInfo, ClaudeProfileInput, ClientMessage, HealthStatus, InstructionItem, PermissionPolicy, TaskExecutionMode } from '@codeforeman/shared';
 import { config, uploadsDir } from './config.js';
 import { db } from './db/index.js';
 import { detectClaude } from './claude/detect.js';
@@ -51,8 +51,9 @@ function recoverFromCrash() {
   if (s.changes || t.changes) {
     console.log(`[CodeForeman] 崩溃恢复：复位 ${s.changes} 个会话、${t.changes} 个任务`);
   }
+  return t.changes;
 }
-recoverFromCrash();
+const interruptedTasks = recoverFromCrash();
 
 // ---------- 日志：stdout + 文件双写 ----------
 
@@ -303,6 +304,7 @@ app.post('/api/projects/:id/git/commit', async (req, reply) => {
 function settingsSnapshot() {
   return {
     permissionPolicy: settings.getPermissionPolicy(),
+    taskExecutionMode: settings.getTaskExecutionMode(),
     instructions: settings.getInstructions(),
     // 配置列表不含密钥（只有 hasApiKey），因此非管理员也可读
     claudeProfiles: settings.listClaudeProfiles(),
@@ -316,11 +318,12 @@ app.put('/api/settings', async (req, reply) => {
   if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
   const body = (req.body ?? {}) as {
     permissionPolicy?: PermissionPolicy;
+    taskExecutionMode?: TaskExecutionMode;
     instructions?: InstructionItem[];
     claudeProfiles?: ClaudeProfileInput[];
     activeClaudeProfileId?: string | null;
   };
-  if (body.permissionPolicy === undefined && body.instructions === undefined
+  if (body.permissionPolicy === undefined && body.taskExecutionMode === undefined && body.instructions === undefined
     && body.claudeProfiles === undefined && body.activeClaudeProfileId === undefined) {
     return reply.code(400).send({ error: '没有需要保存的设置项' });
   }
@@ -328,6 +331,10 @@ app.put('/api/settings', async (req, reply) => {
     // 配置改动是否需要换新进程：比对生效配置的接入变量版本（编辑非生效配置、只改名不会白重启）
     const revBefore = settings.claudeEnvRev();
     if (body.permissionPolicy !== undefined) settings.setPermissionPolicy(body.permissionPolicy);
+    if (body.taskExecutionMode !== undefined) {
+      settings.setTaskExecutionMode(body.taskExecutionMode);
+      tasks.kickQueue();
+    }
     if (body.instructions !== undefined) settings.setInstructions(body.instructions);
     if (body.claudeProfiles !== undefined) settings.saveClaudeProfiles(body.claudeProfiles);
     if (body.activeClaudeProfileId !== undefined) settings.setActiveClaudeProfile(body.activeClaudeProfileId);
@@ -541,7 +548,7 @@ app.patch('/api/tasks/:id', async (req, reply) => {
 
 app.delete('/api/tasks/:id', async (req, reply) => {
   try {
-    tasks.deleteTask((req.params as { id: string }).id);
+    await tasks.deleteTask((req.params as { id: string }).id);
     return { ok: true };
   } catch (err) {
     return reply.code(400).send({ error: (err as Error).message });
@@ -744,6 +751,8 @@ app.log.info(
 );
 // 回填历史归档会话的 AI 改进点（异步串行，不阻塞启动）
 features.backfillSummaries().catch(() => {});
+// 恢复服务停止前已经明确入队的计划；有 running 被中断时保持暂停，等待人工确认
+tasks.resumeQueue(interruptedTasks > 0);
 
 // ---------- 优雅停机 ----------
 const shutdown = async (signal: string) => {

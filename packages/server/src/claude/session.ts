@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { query, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { config } from '../config.js';
-import { autoAllow, claudeSpawnOptions, instructionPrompt, INTERACTIVE_TOOLS } from '../settings/index.js';
+import { autoAllow, claudeSpawnOptions, instructionPrompt } from '../settings/index.js';
 
 export interface PermissionRequestEvent {
   requestId: string;
@@ -46,6 +47,11 @@ export class ClaudeSession {
   private abortController: AbortController | null = null;
   /** 用户显式中断标记（SDK 在进程启动失败时也会 abort 控制器，不能信 signal.aborted） */
   private interruptRequested = false;
+  /**
+   * 本会话中 Claude 通过 Write 创建的文件（绝对路径）。其中临时测试文件的删除属于
+   * 收尾清理，按权限策略无需人工确认（见 policy.ts 的 sessionFiles + isTempTestFile）
+   */
+  private sessionFiles = new Set<string>();
 
   constructor(
     private opts: { cwd: string; resume?: string | null },
@@ -111,6 +117,7 @@ export class ClaudeSession {
         if (m.type === 'system' && m.subtype === 'init' && m.session_id) {
           this.cb.onSessionId(m.session_id);
         }
+        this.trackCreatedFiles(msg);
         this.cb.onEvent(msg);
         if (m.type === 'result') this.cb.onTurnDone();
       }
@@ -156,19 +163,33 @@ export class ClaudeSession {
     }
   }
 
+  /**
+   * 从 assistant 消息里摘出 Write 工具调用，记录本会话创建的文件。
+   * 后续删除其中的临时测试文件（收尾清理测试脚本等）按策略无需人工确认。
+   */
+  private trackCreatedFiles(msg: unknown) {
+    const m = msg as { type?: string; message?: { content?: unknown } };
+    if (m.type !== 'assistant' || !Array.isArray(m.message?.content)) return;
+    for (const block of m.message.content as { type?: string; name?: string; input?: { file_path?: unknown } }[]) {
+      if (block?.type !== 'tool_use' || block.name !== 'Write') continue;
+      if (typeof block.input?.file_path === 'string' && block.input.file_path) {
+        this.sessionFiles.add(path.resolve(this.opts.cwd, block.input.file_path));
+      }
+    }
+  }
+
   private handlePermission(
     toolName: string,
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<PermissionResult> {
-    // 按全局权限策略自动放行（默认：除删除文件、方案确认/提问外全部通过），不走人工确认
-    if (autoAllow(toolName, input)) {
+    // 按全局权限策略自动放行（默认：方案确认/提问、删除项目文件转人工；
+    // 删除 /tmp 临时目录和本会话创建的临时测试文件等安全清理直接通过），不走人工确认
+    if (autoAllow(toolName, input, { cwd: this.opts.cwd, sessionFiles: this.sessionFiles })) {
       return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
     const requestId = randomUUID();
-    // 方案确认/提问用户可能在逐条阅读，给比普通命令更长的确认窗口
-    const isInteractive = INTERACTIVE_TOOLS.has(toolName);
-    const timeoutMs = isInteractive ? config.interactivePermissionTimeoutMs : config.permissionTimeoutMs;
+    const timeoutMs = config.permissionTimeoutMs;
     return new Promise<PermissionResult>((resolve) => {
       let settled = false;
       const done = (result: PermissionResult) => {

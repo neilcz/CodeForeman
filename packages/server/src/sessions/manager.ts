@@ -60,11 +60,14 @@ const SESSION_SELECT = `
  */
 export class SessionManager {
   private live = new Map<string, ClaudeSession>();
+  /** 各常驻进程实际使用的工作目录：来源会话执行并行计划时可能临时指向任务 worktree */
+  private liveCwd = new Map<string, string>();
   /** 各常驻进程 spawn 时的接入配置版本（见 settings/claude.ts claudeEnvRev）：不一致就要换新进程 */
   private liveEnvRev = new Map<string, number>();
   private lastActivity = new Map<string, number>();
   private subscribers = new Map<string, Set<Listener>>();
   private turnDoneListeners = new Set<(sessionId: string) => void>();
+  private turnErrorListeners = new Set<(sessionId: string, error: Error) => void>();
   /** 全局监听（会话新建/状态/标题变更），server 注入后向所有在线 socket 广播 */
   private globalListeners = new Set<Listener>();
 
@@ -89,8 +92,14 @@ export class SessionManager {
   closeSession(id: string) {
     this.live.get(id)?.close();
     this.live.delete(id);
+    this.liveCwd.delete(id);
     this.liveEnvRev.delete(id);
     this.lastActivity.delete(id);
+  }
+
+  /** 仅在进程仍指向指定 worktree 时关闭；用户已切回主目录或其他任务时不误伤 */
+  closeSessionAtCwd(id: string, cwd: string) {
+    if (this.liveCwd.get(id) === path.resolve(cwd)) this.closeSession(id);
   }
 
   /**
@@ -117,6 +126,11 @@ export class SessionManager {
   /** 一轮对话结束时触发（任务编排等模块用来感知 Claude 干完活） */
   onTurnDone(fn: (sessionId: string) => void) {
     this.turnDoneListeners.add(fn);
+  }
+
+  /** Claude 进程本轮出错：任务队列据此停止/释放，不让任务永远卡在 running */
+  onTurnError(fn: (sessionId: string, error: Error) => void) {
+    this.turnErrorListeners.add(fn);
   }
 
   /** 全局会话事件（session.created / session.status / session.updated） */
@@ -203,22 +217,25 @@ export class SessionManager {
     return info;
   }
 
-  /** 懒启动：首条消息时才真正 spawn Claude 进程 */
-  private ensureLive(id: string): ClaudeSession {
+  /** 懒启动：首条消息时才真正 spawn Claude 进程；任务可指定本轮使用的 worktree */
+  private ensureLive(id: string, cwd?: string): ClaudeSession {
+    const info = this.get(id);
+    if (!info) throw new Error(`session ${id} not found`);
+    const targetCwd = path.resolve(cwd ?? info.cwd);
     let session = this.live.get(id);
     if (session) {
-      // 生效的 Claude 接入配置换过了：进程环境在 spawn 时定死，留着它就永远用旧配置
-      // （网关挂掉 → 切新配置 → 这个会话还在用旧的）。空闲时立刻换新进程（凭 resume 接续），
-      // 正在跑的轮次不打断——那轮结束后的下一次发言会走到这里，再换。
-      if (this.liveEnvRev.get(id) === claudeEnvRev() || this.get(id)?.status === 'running') return session;
+      const sameCwd = this.liveCwd.get(id) === targetCwd;
+      // 配置或工作目录变化都要换新进程；正在跑的轮次不允许切到另一个目录。
+      if (sameCwd && (this.liveEnvRev.get(id) === claudeEnvRev() || info.status === 'running')) return session;
+      if (info.status === 'running') {
+        throw new Error('会话正在其他工作目录执行任务，请等待本轮结束后再发送消息');
+      }
       this.closeSession(id);
     }
 
-    const info = this.get(id);
-    if (!info) throw new Error(`session ${id} not found`);
     // 遗留会话的 cwd 可能已不存在（如容器时期创建的 /projects/...），提前报清晰错误
-    if (!fs.existsSync(info.cwd)) {
-      throw new Error(`会话工作目录不存在：${info.cwd}（可能是容器时期创建的遗留会话，请新建会话）`);
+    if (!fs.existsSync(targetCwd)) {
+      throw new Error(`会话工作目录不存在：${targetCwd}（可能是容器时期创建的遗留会话，请新建会话）`);
     }
 
     // 本进程实例的归属标记：旧进程可能晚于新进程结束（如切换配置时主动关闭 + 立刻重开），
@@ -228,7 +245,7 @@ export class SessionManager {
     const stale = () => this.live.get(id) !== instance;
 
     session = new ClaudeSession(
-      { cwd: info.cwd, resume: info.claudeSessionId },
+      { cwd: targetCwd, resume: info.claudeSessionId },
       {
         onEvent: (event) => {
           if (stale()) return;
@@ -273,25 +290,35 @@ export class SessionManager {
           this.setStatus(id, 'error');
           this.broadcast(id, { type: 'chat.error', sessionId: id, error: err.message });
           this.live.delete(id);
+          this.liveCwd.delete(id);
+          for (const fn of this.turnErrorListeners) fn(id, err);
         },
         onEnded: () => {
           // 进程流终止（中断/正常退出）：状态复位，下次发言凭 resume 重启进程
           if (stale()) return;
+          // result 后的正常关闭已在 onTurnDone 置 idle；仍是 running 说明本轮被中断/异常终止
+          const interrupted = this.get(id)?.status === 'running';
           this.live.delete(id);
+          this.liveCwd.delete(id);
           this.setStatus(id, 'idle');
           this.broadcast(id, { type: 'chat.done', sessionId: id });
+          if (interrupted) {
+            const err = new Error('本轮执行已中断');
+            for (const fn of this.turnErrorListeners) fn(id, err);
+          }
         },
       },
     );
     instance = session;
     session.start();
     this.live.set(id, session);
+    this.liveCwd.set(id, targetCwd);
     this.liveEnvRev.set(id, claudeEnvRev());
     return session;
   }
 
-  send(id: string, text: string, attachments?: AttachmentInfo[]) {
-    const session = this.ensureLive(id);
+  send(id: string, text: string, attachments?: AttachmentInfo[], opts: { cwd?: string } = {}) {
+    const session = this.ensureLive(id, opts.cwd);
     this.setStatus(id, 'running');
     this.lastActivity.set(id, Date.now());
     // 用户消息也落库 + 广播，保证多端同步；attachments 仅用于历史展示，不进 prompt

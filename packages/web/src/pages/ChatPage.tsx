@@ -542,6 +542,15 @@ export default function ChatPage() {
     return counts;
   }, [filteredSessions]);
 
+  /** 项目组 → 项目 id：组标题的「+」直接在该项目下建会话；未绑定组没有 id，不显示按钮 */
+  const groupProjectIds = useMemo(() => {
+    const ids = new Map<string, string>();
+    for (const s of filteredSessions) {
+      if (s.projectId) ids.set(s.projectName ?? UNGROUPED_GROUP, s.projectId);
+    }
+    return ids;
+  }, [filteredSessions]);
+
   const changeFilter = (pid: string) => {
     setFilterProjectId(pid);
     localStorage.setItem('cf_chat_project', pid);
@@ -707,13 +716,33 @@ export default function ChatPage() {
             collapsible: true,
             expandedKeys: expandedGroups,
             onExpand: onGroupExpand,
-            label: (group) => (
-              <span className="conv-group-label">
-                <span className="conv-group-dot" style={{ background: projectColor(group) }} />
-                {group}
-                <span className="conv-group-count">{groupCounts.get(group) ?? 0}</span>
-              </span>
-            ),
+            label: (group) => {
+              const projectId = groupProjectIds.get(group);
+              return (
+                <span className="conv-group-label">
+                  <span className="conv-group-dot" style={{ background: projectColor(group) }} />
+                  {group}
+                  {projectId && (
+                    <Tooltip title="在此项目中新建会话">
+                      <Button
+                        className="conv-group-create"
+                        type="text"
+                        size="small"
+                        icon={<PlusOutlined />}
+                        aria-label={`在 ${group} 中新建会话`}
+                        onClick={(event) => {
+                          // 不触发分组标题自身的折叠/展开；若组已折叠，新建后展开以露出新会话
+                          event.stopPropagation();
+                          onGroupExpand([...expandedGroups, group]);
+                          createSession(projectId);
+                        }}
+                      />
+                    </Tooltip>
+                  )}
+                  <span className="conv-group-count">{groupCounts.get(group) ?? 0}</span>
+                </span>
+              );
+            },
           }}
           items={convItems}
           menu={(conv) => (String(conv.key).startsWith(OLDER_PREFIX) ? undefined : {

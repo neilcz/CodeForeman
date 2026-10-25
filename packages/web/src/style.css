@@ -87,6 +87,12 @@ body {
 .conv-group-label { display: inline-flex; align-items: center; gap: 6px; }
 .conv-group-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .conv-group-count { color: #71717a; font-size: 11px; margin-left: 2px; }
+/* 项目名旁的「+」：紧凑图标按钮，点击只新建会话，不冒泡成分组折叠 */
+.conv-group-create {
+  width: 20px; height: 20px; min-width: 20px; padding: 0;
+  color: #8c8c8c; font-size: 12px;
+}
+.conv-group-create:hover { color: #1677ff; }
 /* 会话条目第二行（时间 + 状态 + 标记）：flex 均匀间距，11px 浅色 */
 .conv-item-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 /* 「更早的 N 个会话」折叠行：一行浅色小字，caret 展开时旋转 90°（不是会话条目，不参与选中态） */

@@ -49,6 +49,18 @@ const PROVIDER_ENV_VARS = [
   ...MODEL_ENV_VARS,
 ];
 
+/**
+ * Base URL 归一化：Claude Code 会在 ANTHROPIC_BASE_URL 后面自己拼 `/v1/messages`，
+ * 而用户很容易把完整端点整段粘进来（如 https://apipok.com/v1/messages），
+ * 那样请求会打到 /v1/messages/v1/messages 得到 404——CLI 把 404 翻译成
+ * 「There's an issue with the selected model…」，看起来像模型名写错，极难排查（2026-10-14 踩过）。
+ * 只清这一段后缀，其余原样保留：有的网关 base url 带末尾斜杠或路径前缀（如 kimi 的 /coding/），
+ * 多改一个字符都可能拼错路径。
+ */
+function normalizeBaseUrl(raw?: string): string {
+  return (raw ?? '').trim().replace(/\/v1\/messages\/?$/i, '');
+}
+
 function readProfiles(): StoredProfile[] {
   const raw = getSetting(PROFILES_KEY);
   if (!raw) return [];
@@ -100,9 +112,7 @@ export function saveClaudeProfiles(inputs: ClaudeProfileInput[]): ClaudeProfileI
       id: old?.id ?? randomUUID(),
       name,
       model: input.model?.trim() ?? '',
-      // 原样保留（只去首尾空白）：网关 base url 带不带末尾斜杠、带不带路径前缀（如 kimi 的 /coding/）
-      // 各家写法不同，Cli 侧拼接方式也不保证，改一个字符就可能拼错路径——用户填什么就是什么
-      baseUrl: input.baseUrl?.trim() ?? '',
+      baseUrl: normalizeBaseUrl(input.baseUrl),
       authStyle,
       // apiKey 省略 = 保持原值（前端不会回传已存密钥）；空串 = 清空
       apiKey: input.apiKey === undefined ? old?.apiKey ?? '' : input.apiKey.trim(),

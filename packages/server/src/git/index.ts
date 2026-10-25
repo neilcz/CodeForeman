@@ -84,6 +84,28 @@ export async function createBranch(cwd: string, branch: string, from: string): P
   await git(['checkout', '-b', branch], cwd);
 }
 
+/** 为并行计划创建独立分支和 worktree，主工作区不切分支 */
+export async function createWorktree(cwd: string, worktreePath: string, branch: string, from: string): Promise<void> {
+  if (!(await hasCommits(cwd))) {
+    await git([...COMMIT_ENV, 'commit', '--allow-empty', '-m', 'chore: initial commit'], cwd);
+  }
+  const all = await branches(cwd);
+  if (all.includes(branch)) {
+    // 上次在 worktree 创建前中断：保留已有任务分支，重试时直接挂接
+    await git(['worktree', 'add', worktreePath, branch], cwd);
+    return;
+  }
+  // 空仓库的初始提交可能落在 master 等当前分支，不能盲信调用方给的默认分支名
+  const base = all.includes(from) ? from : await currentBranch(cwd);
+  await git(['worktree', 'add', '-b', branch, worktreePath, base], cwd);
+}
+
+/** 删除任务 worktree；force 仅用于验收后的清理，删除计划时仍保护未提交改动 */
+export async function removeWorktree(cwd: string, worktreePath: string, force = false): Promise<void> {
+  await git(['worktree', 'remove', ...(force ? ['--force'] : []), worktreePath], cwd);
+  await git(['worktree', 'prune'], cwd);
+}
+
 /** 提交全部改动；无改动时返回 false */
 export async function commitAll(cwd: string, message: string): Promise<boolean> {
   if ((await status(cwd)).length === 0) return false;

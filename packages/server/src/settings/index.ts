@@ -1,8 +1,9 @@
-import type { InstructionItem, PermissionPolicy } from '@codeforeman/shared';
-import { shouldAutoAllow } from './policy.js';
+import type { InstructionItem, PermissionPolicy, TaskExecutionMode } from '@codeforeman/shared';
+import { shouldAutoAllow, type AutoAllowContext } from './policy.js';
 import { getSetting, setSetting } from './store.js';
 
 export { isDeleteCommand, INTERACTIVE_TOOLS } from './policy.js';
+export type { AutoAllowContext } from './policy.js';
 export * from './claude.js';
 
 const DEFAULT_POLICY: PermissionPolicy = 'allow-except-delete';
@@ -16,6 +17,23 @@ export function getPermissionPolicy(): PermissionPolicy {
 export function setPermissionPolicy(policy: PermissionPolicy) {
   if (!(POLICIES as string[]).includes(policy)) throw new Error(`未知策略: ${policy}`);
   setSetting('permission_policy', policy);
+}
+
+// ---------- 计划执行方式 ----------
+
+const DEFAULT_TASK_EXECUTION_MODE: TaskExecutionMode = 'parallel';
+const TASK_EXECUTION_MODES: TaskExecutionMode[] = ['serial', 'parallel'];
+
+export function getTaskExecutionMode(): TaskExecutionMode {
+  const v = getSetting('task_execution_mode');
+  return (TASK_EXECUTION_MODES as string[]).includes(v ?? '')
+    ? (v as TaskExecutionMode)
+    : DEFAULT_TASK_EXECUTION_MODE;
+}
+
+export function setTaskExecutionMode(mode: TaskExecutionMode) {
+  if (!(TASK_EXECUTION_MODES as string[]).includes(mode)) throw new Error(`未知计划执行方式: ${mode}`);
+  setSetting('task_execution_mode', mode);
 }
 
 // ---------- 全局指令（注入每个 Claude 会话的系统提示词） ----------
@@ -67,6 +85,6 @@ export function instructionPrompt(): string | undefined {
 }
 
 /** 按当前策略，该工具调用是否无需人工确认直接放行（判定逻辑见 policy.ts 纯函数） */
-export function autoAllow(toolName: string, input: Record<string, unknown>): boolean {
-  return shouldAutoAllow(getPermissionPolicy(), toolName, input);
+export function autoAllow(toolName: string, input: Record<string, unknown>, ctx?: AutoAllowContext): boolean {
+  return shouldAutoAllow(getPermissionPolicy(), toolName, input, ctx);
 }

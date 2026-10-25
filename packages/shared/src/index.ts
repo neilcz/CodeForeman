@@ -58,6 +58,9 @@ export interface SessionInfo {
 
 export type TaskStatus = 'draft' | 'queued' | 'running' | 'review' | 'done' | 'failed' | 'conflict';
 
+/** 计划执行方式：串行在当前分支逐条提交；并行使用独立分支与 worktree */
+export type TaskExecutionMode = 'serial' | 'parallel';
+
 /** 功能演进：一个功能聚合多次会话/任务的迭代记录 */
 export interface FeatureInfo {
   id: string;
@@ -94,10 +97,21 @@ export interface TaskInfo {
   description: string;
   source: 'manual' | 'chat';
   status: TaskStatus;
-  /** true=验收后自动合并回主分支并删除任务分支；false=保留分支手动合并 */
+  /** true=验收后自动合并回主分支并删除任务分支；false=保留分支手动合并（仅并行模式） */
   autoMerge: boolean;
+  /** 「存为计划」的来源会话；执行时优先复用 */
+  originSessionId: string | null;
+  /** 实际启动时的执行方式；null 为旧版任务 */
+  executionMode: TaskExecutionMode | null;
+  /** 本次实际执行的分支：串行为当前分支，并行为独立任务分支 */
   branch: string | null;
   sessionId: string | null;
+  /** 并行任务的独立工作目录 */
+  worktreePath: string | null;
+  /** 入队时间，串行队列据此 FIFO */
+  queuedAt: number | null;
+  /** Claude 执行结束时的提交/HEAD */
+  taskCommit: string | null;
   mergeCommit: string | null;
   error: string | null;
   createdAt: number;

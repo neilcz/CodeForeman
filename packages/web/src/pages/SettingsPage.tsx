@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { App, Button, Card, Input, Popconfirm, Radio, Select, Space, Switch, Typography } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
-import type { ClaudeAuthStyle, ClaudeProfileInfo, InstructionItem, PermissionPolicy } from '@codeforeman/shared';
+import type { ClaudeAuthStyle, ClaudeProfileInfo, InstructionItem, PermissionPolicy, TaskExecutionMode } from '@codeforeman/shared';
 import { api } from '../api';
 import SshKeysCard from '../SshKeysCard';
 
 interface SettingsResp {
   permissionPolicy: PermissionPolicy;
+  taskExecutionMode: TaskExecutionMode;
   instructions: InstructionItem[];
   claudeProfiles: ClaudeProfileInfo[];
   activeClaudeProfileId: string | null;
@@ -48,7 +49,7 @@ const POLICY_OPTIONS: { value: PermissionPolicy; label: string; desc: string }[]
   {
     value: 'allow-except-delete',
     label: '默认放行（推荐）',
-    desc: '除删除文件（rm / git rm / find -delete 等）需确认外，其他操作自动通过；方案确认（ExitPlanMode）和提问始终由你人工决定',
+    desc: '删除 /tmp 临时目录下的文件、删除本会话中创建的临时测试文件自动放行；删除项目文件及磁盘上其他文件需确认；方案确认（ExitPlanMode）和提问始终由你人工决定',
   },
   {
     value: 'strict',
@@ -64,6 +65,7 @@ const POLICY_OPTIONS: { value: PermissionPolicy; label: string; desc: string }[]
 
 export default function SettingsPage({ me }: { me: { role: string } | null }) {
   const [policy, setPolicy] = useState<PermissionPolicy>('allow-except-delete');
+  const [executionMode, setExecutionMode] = useState<TaskExecutionMode>('parallel');
   const [instructions, setInstructions] = useState<InstructionItem[]>([]);
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [activeProfileId, setActiveProfileId] = useState('');
@@ -74,6 +76,7 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
 
   const applySettings = (s: SettingsResp) => {
     setPolicy(s.permissionPolicy);
+    setExecutionMode(s.taskExecutionMode);
     setInstructions(s.instructions);
     setProfiles(s.claudeProfiles.map(toRow));
     setActiveProfileId(s.activeClaudeProfileId ?? '');
@@ -93,6 +96,21 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
       message.success('已保存，立即生效');
     } catch (e) {
       setPolicy(prev);
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeExecutionMode = async (value: TaskExecutionMode) => {
+    const prev = executionMode;
+    setExecutionMode(value);
+    setSaving(true);
+    try {
+      await api.put('/api/settings', { taskExecutionMode: value });
+      message.success('已保存，运行中的计划仍按原方式收尾');
+    } catch (e) {
+      setExecutionMode(prev);
       message.error((e as Error).message);
     } finally {
       setSaving(false);
@@ -246,6 +264,37 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
         )}
       </Card>
 
+      <Card size="small" title="计划执行" style={{ marginTop: 16 }}>
+        <Typography.Paragraph type="secondary">
+          从会话保存的计划会回到原会话执行。切换方式只影响之后开始的计划，运行中的计划仍按启动时方式收尾。
+        </Typography.Paragraph>
+        <Radio.Group
+          value={executionMode}
+          disabled={!isAdmin || saving}
+          onChange={(e) => changeExecutionMode(e.target.value as TaskExecutionMode)}
+        >
+          <Space direction="vertical" size={12}>
+            <Radio value="parallel">
+              <b>并行（独立分支）</b>
+              <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>
+                每条计划在独立分支和 worktree 中执行，验收后按原计划设置合并；同一来源会话内仍逐个执行
+              </div>
+            </Radio>
+            <Radio value="serial">
+              <b>串行（当前分支）</b>
+              <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>
+                全局一次执行一条，不新建分支；每条提交 commit 后自动执行下一条，待验收不阻塞队列
+              </div>
+            </Radio>
+          </Space>
+        </Radio.Group>
+        {!isAdmin && (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
+            只有管理员可以修改计划执行方式。
+          </Typography.Paragraph>
+        )}
+      </Card>
+
       <Card
         size="small"
         title="Claude 接入配置"
@@ -265,6 +314,7 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
           <br />
           选中的这套是完整配置：<b>留空的项一律不设置</b>，不会沿用 .env 或本机 ~/.claude/settings.json
           里别家的地址/密钥/模型（只选「服务器默认」时才完全沿用它们）。密钥只存在服务端、不回显到页面，留空即保持原样。
+          Base URL 填到域名或前缀即可（如 <code>https://apipok.com</code>），<b>不要带 /v1/messages</b>——CLI 会自己拼这段路径。
           <br />
           改动对新起的 Claude 进程生效：切换后空闲会话的进程立刻重启，正在跑的会话在下一轮自动换过来。
         </Typography.Paragraph>

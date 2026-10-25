@@ -117,6 +117,14 @@ const migrations: string[] = [
   ALTER TABLE tasks ADD COLUMN origin_session_id TEXT;
   CREATE INDEX IF NOT EXISTS idx_tasks_origin_session ON tasks(origin_session_id);
   `,
+  // v10: 计划队列 —— 串并行执行上下文、FIFO 入队时间、独立 worktree 与任务提交
+  `
+  ALTER TABLE tasks ADD COLUMN queued_at INTEGER;
+  ALTER TABLE tasks ADD COLUMN execution_mode TEXT;
+  ALTER TABLE tasks ADD COLUMN worktree_path TEXT;
+  ALTER TABLE tasks ADD COLUMN task_commit TEXT;
+  CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status, queued_at, created_at);
+  `,
 ];
 
 export function migrate() {

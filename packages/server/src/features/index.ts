@@ -229,7 +229,7 @@ export function updateFeatureSummary(id: string, summary: string) {
  */
 export async function autoArchiveTask(taskId: string): Promise<void> {
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as
-    { id: string; project_id: string; title: string; description: string; merge_commit: string | null; session_id: string | null } | undefined;
+    { id: string; project_id: string; title: string; description: string; merge_commit: string | null; task_commit: string | null; session_id: string | null } | undefined;
   if (!task) return;
   const project = getProject(task.project_id);
   if (!project) return;
@@ -241,10 +241,11 @@ export async function autoArchiveTask(taskId: string): Promise<void> {
   if (exists) return;
 
   let diffStat = '';
-  if (task.merge_commit) {
+  const resultCommit = task.merge_commit ?? task.task_commit;
+  if (resultCommit) {
     try {
       const { stdout } = await execFileAsync(
-        'git', ['show', '--stat', '--format=%s', task.merge_commit],
+        'git', ['show', '--stat', '--format=%s', resultCommit],
         { cwd: project.path, timeout: 15_000 },
       );
       diffStat = stdout.slice(0, 3000);

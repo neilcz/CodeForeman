@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 加载仓库根目录的 .env（Claude/Kimi 凭证等）。Docker 中由 compose env_file 直接注入，跳过；
-// launchd/systemd 常驻时也不注入 shell 环境，这里读文件是唯一来源。
+// 加载仓库根目录的 .env（Claude/Kimi 凭证、项目目录等）。
+// loadEnvFile 不覆盖已有环境变量，因此 Docker/多配置注入仍然优先。
 const envFile = path.resolve(__dirname, '../../../.env');
-if (!process.env.ANTHROPIC_AUTH_TOKEN && fs.existsSync(envFile)) {
+if (fs.existsSync(envFile)) {
   process.loadEnvFile(envFile);
 }
 
@@ -21,10 +21,8 @@ export const config = {
   version: '0.1.0',
   /** 当前接入的模型端点（仅展示用，不泄露 token） */
   endpoint: process.env.ANTHROPIC_BASE_URL ?? null,
-  /** 权限确认等待超时：超时自动拒绝（拒绝必留痕，见 session.ts），防止进程无限挂起 */
-  permissionTimeoutMs: 120_000,
-  /** 方案确认/提问等交互类确认的超时：用户可能在读方案，给宽一些 */
-  interactivePermissionTimeoutMs: 600_000,
+  /** 权限确认等待超时：超时自动拒绝（拒绝必留痕，见 session.ts），防止进程无限挂起。所有确认统一 10 分钟 */
+  permissionTimeoutMs: 600_000,
 } as const;
 
 /**
@@ -39,6 +37,8 @@ export const dbDir = path.join(config.dataDir, 'db');
 export const sshKeysDir = path.join(config.dataDir, 'ssh-keys');
 /** 聊天附件目录：<uploadsDir>/<sessionId>/<file> */
 export const uploadsDir = path.join(config.dataDir, 'uploads');
+/** 并行计划的独立 git worktree 根目录：<worktreesDir>/<taskId> */
+export const worktreesDir = path.join(config.dataDir, 'worktrees');
 // 显式配置的 PROJECTS_DIR 不存在时直接报错（防手滑写错路径后静默建错目录）
 if (process.env.PROJECTS_DIR && !fs.existsSync(projectsDir)) {
   throw new Error(`PROJECTS_DIR 不存在: ${projectsDir}`);
@@ -47,3 +47,4 @@ fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(dbDir, { recursive: true });
 fs.mkdirSync(sshKeysDir, { recursive: true });
 fs.mkdirSync(uploadsDir, { recursive: true });
+fs.mkdirSync(worktreesDir, { recursive: true });
