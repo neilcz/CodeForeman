@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { App, Alert, Button, Checkbox, Divider, Form, Input, Modal, Radio, Select, Space, Spin, Tooltip, Typography } from 'antd';
 import { Conversations, Bubble, type ConversationItemType } from '@ant-design/x';
@@ -42,6 +42,15 @@ interface StoredEvent {
   attachments?: AttachmentInfo[];
   [k: string]: unknown;
 }
+
+interface HistoryRow {
+  id: number;
+  ts: number;
+  event: StoredEvent;
+}
+
+/** 首次只加载最近一页；继续上翻时按最早的消息 id 向前翻页 */
+const HISTORY_PAGE_SIZE = 200;
 
 // ---------- 事件 → 缩略行（Claude Code 风格：圆点 + 竖线 + 单行摘要，点击展开） ----------
 
@@ -372,6 +381,8 @@ export default function ChatPage() {
   /** 已展开「更早的会话」的项目组名（只在本次页面停留内有效，刷新后回到默认折叠） */
   const [expandedOlder, setExpandedOlder] = useState<string[]>([]);
   const [events, setEvents] = useState<StoredEvent[]>([]);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [permission, setPermission] = useState<PermissionCard | null>(null);
   const [ideaOpen, setIdeaOpen] = useState(false);
   const [ideaDrafting, setIdeaDrafting] = useState(false);
@@ -388,6 +399,10 @@ export default function ChatPage() {
   /** 已渲染消息的 DB 行 id（重连补拉/重复广播去重用） */
   const seenIdsRef = useRef<Set<number>>(new Set());
   const lastIdRef = useRef(0);
+  const firstIdRef = useRef(0);
+  /** 向前分页 prepend 后恢复原视口位置，并跳过本次事件的自动滚底 */
+  const prependScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const skipAutoScrollRef = useRef(false);
 
   useEffect(() => {
     api.get<SessionInfo[]>('/api/sessions').then(setSessions);
@@ -401,7 +416,7 @@ export default function ChatPage() {
         setSessions(sortSessions(msg.sessions));
         const sid = activeRef.current;
         if (sid) {
-          api.get<{ id: number; ts: number; event: StoredEvent }[]>(`/api/sessions/${sid}/messages?after=${lastIdRef.current}`)
+          api.get<HistoryRow[]>(`/api/sessions/${sid}/messages?after=${lastIdRef.current}`)
             .then((rows) => {
               const fresh = rows.filter((r) => !seenIdsRef.current.has(r.id));
               if (!fresh.length) return;
@@ -457,21 +472,44 @@ export default function ChatPage() {
     if (!sessionId) return;
     setEvents([]);
     setPermission(null);
+    setHasMoreHistory(false);
+    setLoadingEarlier(false);
     seenIdsRef.current = new Set();
     lastIdRef.current = 0;
-    api.get<{ id: number; ts: number; event: StoredEvent }[]>(`/api/sessions/${sessionId}/messages`)
+    firstIdRef.current = 0;
+    prependScrollRef.current = null;
+    skipAutoScrollRef.current = false;
+    api.get<HistoryRow[]>(`/api/sessions/${sessionId}/messages?limit=${HISTORY_PAGE_SIZE}`)
       .then((rows) => {
+        // 慢请求返回时用户可能已切换到别的会话，不能把旧历史写进新会话
+        if (activeRef.current !== sessionId) return;
         seenIdsRef.current = new Set(rows.map((r) => r.id));
         lastIdRef.current = rows.length ? rows[rows.length - 1].id : 0;
+        firstIdRef.current = rows.length ? rows[0].id : 0;
+        setHasMoreHistory(rows.length === HISTORY_PAGE_SIZE);
         setEvents(rows.map((r) => ({ ...r.event, ts: r.ts })));
-      });
+      })
+      .catch((e) => message.error(`历史消息加载失败：${(e as Error).message}`));
     subscribeSession(sessionId);
     return () => unsubscribeSession(sessionId);
   }, [sessionId]);
 
+  // prepend 更早历史后保持正在阅读的位置；useLayoutEffect 在浏览器绘制前完成修正，避免视觉跳动
+  useLayoutEffect(() => {
+    const pending = prependScrollRef.current;
+    const el = messagesRef.current;
+    if (!pending || !el) return;
+    el.scrollTop = pending.top + el.scrollHeight - pending.height;
+    prependScrollRef.current = null;
+  }, [events]);
+
   // 自动滚动：只有贴在底部时才跟随新事件（用户上翻阅读时不打断）；事件驱动用瞬时定位，
   // 避免流式期间 smooth 动画被反复打断重启造成卡顿；自己发的消息（user 文本事件）始终 smooth 到底
   useEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
     const last = events[events.length - 1];
     const ownMsg = last?.type === 'user' && typeof last.message?.content === 'string';
     if (ownMsg) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -487,6 +525,36 @@ export default function ChatPage() {
   const onMessagesScroll = () => {
     const el = messagesRef.current;
     if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  const loadEarlier = async () => {
+    const sid = sessionId;
+    const before = firstIdRef.current;
+    if (!sid || !before || loadingEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const rows = await api.get<HistoryRow[]>(
+        `/api/sessions/${sid}/messages?before=${before}&limit=${HISTORY_PAGE_SIZE}`,
+      );
+      if (activeRef.current !== sid) return;
+      const fresh = rows.filter((r) => !seenIdsRef.current.has(r.id));
+      for (const r of fresh) seenIdsRef.current.add(r.id);
+      if (rows.length) firstIdRef.current = rows[0].id;
+      setHasMoreHistory(rows.length === HISTORY_PAGE_SIZE);
+      if (fresh.length) {
+        const el = messagesRef.current;
+        prependScrollRef.current = el ? { height: el.scrollHeight, top: el.scrollTop } : null;
+        skipAutoScrollRef.current = true;
+        setEvents((current) => [
+          ...fresh.map((r) => ({ ...r.event, ts: r.ts })),
+          ...current,
+        ]);
+      }
+    } catch (e) {
+      message.error(`更早消息加载失败：${(e as Error).message}`);
+    } finally {
+      if (activeRef.current === sid) setLoadingEarlier(false);
+    }
   };
 
   const active = sessions.find((s) => s.id === sessionId);
@@ -780,6 +848,13 @@ export default function ChatPage() {
             </div>
 
             <div className="messages" ref={messagesRef} onScroll={onMessagesScroll}>
+              {hasMoreHistory && (
+                <div className="history-more">
+                  <Button size="small" loading={loadingEarlier} onClick={() => void loadEarlier()}>
+                    加载更早消息
+                  </Button>
+                </div>
+              )}
               {items.map((it) => (
                 <ItemView key={it.key} item={it} onFileClick={openFile} sessionId={sessionId} />
               ))}

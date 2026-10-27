@@ -129,6 +129,7 @@ body {
 }
 /* flex 子项默认 min-width:auto，长内容会撑爆容器 —— 全链路约束 */
 .messages > * { min-width: 0; max-width: 100%; }
+.history-more { padding: 0 0 12px; text-align: center; }
 
 /* 用户气泡宽度约束必须加在 root（父宽确定，百分比可正常解析）。
    千万别在 content 上用百分比 max-width：content 处于 shrink-to-fit 循环里，

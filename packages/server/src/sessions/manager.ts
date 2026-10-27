@@ -195,11 +195,28 @@ export class SessionManager {
     this.broadcastGlobal({ type: 'session.updated', session: info });
   }
 
-  /** 历史事件（用于前端刷新/断线回放） */
-  history(sessionId: string, afterId = 0): { id: number; ts: number; event: unknown }[] {
-    const rows = db.prepare(
-      'SELECT id, event, created_at FROM messages WHERE session_id = ? AND id > ? ORDER BY id',
-    ).all(sessionId, afterId) as { id: number; event: string; created_at: number }[];
+  /**
+   * 历史事件：after 用于断线后的全量增量补拉；limit/before 用于首次打开和向前分页。
+   * 分页查询先倒序取最近一页，再恢复时间正序，避免长会话一次性传输、解析全部历史。
+   */
+  history(sessionId: string, opts: { afterId?: number; beforeId?: number; limit?: number } = {}): { id: number; ts: number; event: unknown }[] {
+    const { afterId = 0, beforeId, limit } = opts;
+    let rows: { id: number; event: string; created_at: number }[];
+    if (beforeId != null && limit != null) {
+      rows = db.prepare(
+        'SELECT id, event, created_at FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?',
+      ).all(sessionId, beforeId, limit) as typeof rows;
+      rows.reverse();
+    } else if (limit != null) {
+      rows = db.prepare(
+        'SELECT id, event, created_at FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?',
+      ).all(sessionId, limit) as typeof rows;
+      rows.reverse();
+    } else {
+      rows = db.prepare(
+        'SELECT id, event, created_at FROM messages WHERE session_id = ? AND id > ? ORDER BY id',
+      ).all(sessionId, afterId) as typeof rows;
+    }
     return rows.map((r) => ({ id: r.id, ts: r.created_at, event: JSON.parse(r.event) }));
   }
 

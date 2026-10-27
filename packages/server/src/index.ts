@@ -406,8 +406,14 @@ app.get('/api/sessions/:id/messages', async (req, reply) => {
   if (session.projectId && !projects.canAccess(req.user!, session.projectId)) {
     return reply.code(403).send({ error: '无权访问该会话' });
   }
-  const { after } = req.query as { after?: string };
-  return sessionManager.history(id, after ? Number(after) : 0);
+  const { after, before, limit } = req.query as { after?: string; before?: string; limit?: string };
+  // 分页上限防止异常参数重新拉爆长会话；after 不带 limit 时仍完整补拉，避免断线丢事件
+  const pageSize = limit == null ? undefined : Math.min(500, Math.max(1, Number(limit) || 200));
+  return sessionManager.history(id, {
+    afterId: after ? Number(after) : 0,
+    beforeId: before ? Number(before) : undefined,
+    limit: pageSize,
+  });
 });
 
 /** 「存为计划」草稿：总结当前会话生成标题 + 描述 */
