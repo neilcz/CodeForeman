@@ -400,6 +400,9 @@ export default function ChatPage() {
   const seenIdsRef = useRef<Set<number>>(new Set());
   const lastIdRef = useRef(0);
   const firstIdRef = useRef(0);
+  const historyReadyRef = useRef(false);
+  const loadingEarlierRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
   /** 向前分页 prepend 后恢复原视口位置，并跳过本次事件的自动滚底 */
   const prependScrollRef = useRef<{ height: number; top: number } | null>(null);
   const skipAutoScrollRef = useRef(false);
@@ -415,9 +418,12 @@ export default function ChatPage() {
         // 每次（重）连接服务端都会推全量会话列表：刷新状态，并补拉断线期间错过的消息
         setSessions(sortSessions(msg.sessions));
         const sid = activeRef.current;
-        if (sid) {
+        // 首次连接的 hello 往往早于首屏历史返回，此时 after=0 会把分页外的全量历史重新拉回来；
+        // 只有首屏完成后才把它视为断线补拉（lastId=0 的空会话也允许补拉新消息）。
+        if (sid && historyReadyRef.current) {
           api.get<HistoryRow[]>(`/api/sessions/${sid}/messages?after=${lastIdRef.current}`)
             .then((rows) => {
+              if (activeRef.current !== sid) return;
               const fresh = rows.filter((r) => !seenIdsRef.current.has(r.id));
               if (!fresh.length) return;
               for (const r of fresh) {
@@ -477,6 +483,9 @@ export default function ChatPage() {
     seenIdsRef.current = new Set();
     lastIdRef.current = 0;
     firstIdRef.current = 0;
+    historyReadyRef.current = false;
+    loadingEarlierRef.current = false;
+    lastScrollTopRef.current = 0;
     prependScrollRef.current = null;
     skipAutoScrollRef.current = false;
     api.get<HistoryRow[]>(`/api/sessions/${sessionId}/messages?limit=${HISTORY_PAGE_SIZE}`)
@@ -486,6 +495,7 @@ export default function ChatPage() {
         seenIdsRef.current = new Set(rows.map((r) => r.id));
         lastIdRef.current = rows.length ? rows[rows.length - 1].id : 0;
         firstIdRef.current = rows.length ? rows[0].id : 0;
+        historyReadyRef.current = true;
         setHasMoreHistory(rows.length === HISTORY_PAGE_SIZE);
         setEvents(rows.map((r) => ({ ...r.event, ts: r.ts })));
       })
@@ -521,16 +531,11 @@ export default function ChatPage() {
     nearBottomRef.current = true;
   }, [sessionId]);
 
-  /** 贴底判定：距底 80px 内视为跟随状态 */
-  const onMessagesScroll = () => {
-    const el = messagesRef.current;
-    if (el) nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-
   const loadEarlier = async () => {
     const sid = sessionId;
     const before = firstIdRef.current;
-    if (!sid || !before || loadingEarlier) return;
+    if (!sid || !before || loadingEarlierRef.current) return;
+    loadingEarlierRef.current = true;
     setLoadingEarlier(true);
     try {
       const rows = await api.get<HistoryRow[]>(
@@ -553,8 +558,23 @@ export default function ChatPage() {
     } catch (e) {
       message.error(`更早消息加载失败：${(e as Error).message}`);
     } finally {
-      if (activeRef.current === sid) setLoadingEarlier(false);
+      if (activeRef.current === sid) {
+        loadingEarlierRef.current = false;
+        setLoadingEarlier(false);
+      }
     }
+  };
+
+  /** 贴底判定：距底 80px 内视为跟随状态；仅用户向上滚动接近顶部时自动向前翻页 */
+  const onMessagesScroll = () => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const top = el.scrollTop;
+    // 初次滚底、prepend 后的视口修正都是程序向下滚动，不能误触发连续翻页
+    const scrollingUp = top < lastScrollTopRef.current - 1;
+    lastScrollTopRef.current = top;
+    nearBottomRef.current = el.scrollHeight - top - el.clientHeight < 80;
+    if (scrollingUp && top < 120 && hasMoreHistory) void loadEarlier();
   };
 
   const active = sessions.find((s) => s.id === sessionId);
@@ -850,9 +870,9 @@ export default function ChatPage() {
             <div className="messages" ref={messagesRef} onScroll={onMessagesScroll}>
               {hasMoreHistory && (
                 <div className="history-more">
-                  <Button size="small" loading={loadingEarlier} onClick={() => void loadEarlier()}>
-                    加载更早消息
-                  </Button>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {loadingEarlier ? <><LoadingOutlined spin /> 正在加载更早消息…</> : '上划自动加载更早消息'}
+                  </Typography.Text>
                 </div>
               )}
               {items.map((it) => (
@@ -873,8 +893,10 @@ export default function ChatPage() {
               <div ref={bottomRef} />
             </div>
 
-            {/* 输入区独立组件：打字只重渲染自身；key 随会话切换，自动重置输入与待发送附件 */}
-            <ChatInput key={active.id} sessionId={active.id} />
+            {/* 本页访问过的输入框保持挂载、仅隐藏，未发送文字/附件不会随会话切换销毁 */}
+            {sessions.filter((s) => s.id === sessionId || !!localStorage.getItem(`cf_chat_draft_${s.id}`)).map((s) => (
+              <ChatInput key={s.id} sessionId={s.id} active={s.id === active.id} />
+            ))}
           </>
         )}
       </div>

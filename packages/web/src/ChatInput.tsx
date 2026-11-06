@@ -10,18 +10,25 @@ import { sendWs } from './ws';
 /**
  * 会话输入区（独立组件）：输入/附件状态全部留在组件内部，
  * 打字只重渲染本组件，不再触碰消息列表（长会话打字卡顿的根源修复）。
- * 调用方以 key={sessionId} 挂载，切换会话时自动重置输入与待发送附件。
+ * ChatPage 按会话挂载并隐藏非当前输入框，未发送文字、附件 File 和预览 URL 均不随切换销毁。
  */
-export default function ChatInput({ sessionId }: { sessionId: string }) {
+export default function ChatInput({ sessionId, active = true }: { sessionId: string; active?: boolean }) {
   const { message } = App.useApp();
-  const [input, setInput] = useState('');
+  const draftKey = `cf_chat_draft_${sessionId}`;
+  const [input, setInput] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [attachItems, setAttachItems] = useState<Attachment[]>([]);
   const [attachOpen, setAttachOpen] = useState(false);
   const [sending, setSending] = useState(false);
   /** uid → 预览 blob URL，用于移除/发送后回收 */
   const blobUrlsRef = useRef<Map<string, string>>(new Map());
 
-  // 卸载（切换会话/离开页面）时兜底回收未清空的预览 blob
+  useEffect(() => {
+    // 文字额外持久化，刷新页面也能找回；附件 File 只在当前页面存活，刷新后无法安全恢复
+    if (input) localStorage.setItem(draftKey, input);
+    else localStorage.removeItem(draftKey);
+  }, [draftKey, input]);
+
+  // 页面卸载/关闭时兜底回收未发送的预览 blob
   useEffect(() => {
     const urls = blobUrlsRef.current;
     return () => {
@@ -93,7 +100,7 @@ export default function ChatInput({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="sender-bar">
+    <div className="sender-bar" hidden={!active}>
       <Sender
         value={input}
         onChange={setInput}
@@ -107,6 +114,8 @@ export default function ChatInput({ sessionId }: { sessionId: string }) {
             open={attachOpen}
             onOpenChange={setAttachOpen}
             closable
+            // 隐藏输入区/折叠附件面板都不卸载 FileList，否则附件组件内部状态会丢失
+            forceRender
           >
             <Attachments
               beforeUpload={() => false}

@@ -19,6 +19,17 @@ export function setPermissionPolicy(policy: PermissionPolicy) {
   setSetting('permission_policy', policy);
 }
 
+/** 人工审批等待时间（分钟）；0 = 永不过期。新请求发起时读取，进行中的审批保持原等待时间 */
+export function getPermissionTimeoutMinutes(): number {
+  const value = Number(getSetting('permission_timeout_minutes') ?? 0);
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+export function setPermissionTimeoutMinutes(minutes: number) {
+  if (!Number.isInteger(minutes) || minutes < 0) throw new Error('审批等待时间必须是大于等于 0 的整数分钟');
+  setSetting('permission_timeout_minutes', String(minutes));
+}
+
 // ---------- 计划执行方式 ----------
 
 const DEFAULT_TASK_EXECUTION_MODE: TaskExecutionMode = 'parallel';

@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { query, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import { config } from '../config.js';
-import { autoAllow, claudeSpawnOptions, instructionPrompt } from '../settings/index.js';
+import { autoAllow, claudeSpawnOptions, getPermissionTimeoutMinutes, instructionPrompt } from '../settings/index.js';
 
 export interface PermissionRequestEvent {
   requestId: string;
@@ -42,6 +41,8 @@ export class ClaudeSession {
   private queue: SDKUserMessage[] = [];
   private wakeup: (() => void) | null = null;
   private permissionResolvers = new Map<string, (allow: boolean, opts?: PermissionResponseOpts) => void>();
+  /** 当前仍待审批的请求：订阅/重连时补发，避免一次性广播错过后再也看不到授权卡片 */
+  private permissionRequests = new Map<string, PermissionRequestEvent>();
   private started = false;
   private closed = false;
   private abortController: AbortController | null = null;
@@ -74,11 +75,17 @@ export class ClaudeSession {
     this.abortController?.abort();
   }
 
+  /** 当前待审批请求，供新订阅/断线重连补发 */
+  pendingPermissions(): PermissionRequestEvent[] {
+    return [...this.permissionRequests.values()];
+  }
+
   /** 前端权限确认结果回传 */
   respondPermission(requestId: string, allow: boolean, opts?: PermissionResponseOpts): boolean {
     const resolve = this.permissionResolvers.get(requestId);
     if (!resolve) return false;
     this.permissionResolvers.delete(requestId);
+    this.permissionRequests.delete(requestId);
     resolve(allow, opts);
     this.cb.onPermissionResolved(requestId, allow);
     return true;
@@ -149,6 +156,7 @@ export class ClaudeSession {
     this.abortController?.abort();
     for (const resolve of this.permissionResolvers.values()) resolve(false);
     this.permissionResolvers.clear();
+    this.permissionRequests.clear();
   }
 
   private async *messageStream(): AsyncIterable<SDKUserMessage> {
@@ -189,32 +197,36 @@ export class ClaudeSession {
       return Promise.resolve({ behavior: 'allow', updatedInput: input });
     }
     const requestId = randomUUID();
-    const timeoutMs = config.permissionTimeoutMs;
+    const timeoutMs = getPermissionTimeoutMinutes() * 60_000;
     return new Promise<PermissionResult>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
       const done = (result: PermissionResult) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
         resolve(result);
       };
 
-      const timer = setTimeout(() => {
-        this.permissionResolvers.delete(requestId);
-        // 超时必须留痕：清掉前端确认卡片 + 在对话流里落一条系统消息（会持久化），
-        // 否则像结尾清理临时文件的 rm 超时一样，对话里什么都看不到
-        this.cb.onPermissionResolved(requestId, false);
-        this.cb.onEvent({
-          type: 'system',
-          subtype: 'permission.timeout',
-          message: `权限确认超时（${Math.round(timeoutMs / 60000)} 分钟无响应），已自动拒绝：${toolName} — ${inputBrief(input)}`,
-        });
-        done({ behavior: 'deny', message: `审批超时（${Math.round(timeoutMs / 1000)}s 无响应），自动拒绝` });
-      }, timeoutMs);
+      // 0 = 永不过期；页面关闭或重连后由订阅补发恢复卡片，直到用户反馈/超时/中断
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.permissionResolvers.delete(requestId);
+          this.permissionRequests.delete(requestId);
+          this.cb.onPermissionResolved(requestId, false);
+          this.cb.onEvent({
+            type: 'system',
+            subtype: 'permission.timeout',
+            message: `权限确认超时（${Math.round(timeoutMs / 60000)} 分钟无响应），已自动拒绝：${toolName} — ${inputBrief(input)}`,
+          });
+          done({ behavior: 'deny', message: `审批超时（${Math.round(timeoutMs / 1000)}s 无响应），自动拒绝` });
+        }, timeoutMs);
+      }
 
       const onAbort = () => {
         this.permissionResolvers.delete(requestId);
+        this.permissionRequests.delete(requestId);
         this.cb.onPermissionResolved(requestId, false);
         done({ behavior: 'deny', message: '会话已中断' });
       };
@@ -225,13 +237,14 @@ export class ClaudeSession {
           ? { behavior: 'allow', updatedInput: opts?.answers ? { ...input, answers: opts.answers } : input }
           : { behavior: 'deny', message: opts?.denyMessage?.trim() || '用户拒绝' });
       });
+      this.permissionRequests.set(requestId, { requestId, toolName, input });
 
       this.cb.onPermissionRequest({ requestId, toolName, input });
     });
   }
 }
 
-/** 权限请求的输入摘要（用于超时留痕消息，取命令/文件路径等关键参数） */
+/** 超时留痕的命令/文件路径摘要 */
 function inputBrief(input: Record<string, unknown>): string {
   for (const k of ['command', 'file_path', 'path', 'description']) {
     const v = input[k];

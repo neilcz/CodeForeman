@@ -492,6 +492,11 @@ export class SessionManager {
     let set = this.subscribers.get(sessionId);
     if (!set) this.subscribers.set(sessionId, (set = new Set()));
     set.add(listener);
+    // 权限请求不是历史消息，但审批仍挂在本会话进程里；新订阅/重连必须补发，
+    // 否则请求发出时没收到广播的页面只能等到审批超时。
+    for (const req of this.live.get(sessionId)?.pendingPermissions() ?? []) {
+      listener({ type: 'permission.request', sessionId, ...req });
+    }
   }
 
   unsubscribe(sessionId: string, listener: Listener) {

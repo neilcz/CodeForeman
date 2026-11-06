@@ -304,6 +304,7 @@ app.post('/api/projects/:id/git/commit', async (req, reply) => {
 function settingsSnapshot() {
   return {
     permissionPolicy: settings.getPermissionPolicy(),
+    permissionTimeoutMinutes: settings.getPermissionTimeoutMinutes(),
     taskExecutionMode: settings.getTaskExecutionMode(),
     instructions: settings.getInstructions(),
     // 配置列表不含密钥（只有 hasApiKey），因此非管理员也可读
@@ -318,12 +319,13 @@ app.put('/api/settings', async (req, reply) => {
   if (req.user!.role !== 'admin') return reply.code(403).send({ error: '需要管理员权限' });
   const body = (req.body ?? {}) as {
     permissionPolicy?: PermissionPolicy;
+    permissionTimeoutMinutes?: number;
     taskExecutionMode?: TaskExecutionMode;
     instructions?: InstructionItem[];
     claudeProfiles?: ClaudeProfileInput[];
     activeClaudeProfileId?: string | null;
   };
-  if (body.permissionPolicy === undefined && body.taskExecutionMode === undefined && body.instructions === undefined
+  if (body.permissionPolicy === undefined && body.permissionTimeoutMinutes === undefined && body.taskExecutionMode === undefined && body.instructions === undefined
     && body.claudeProfiles === undefined && body.activeClaudeProfileId === undefined) {
     return reply.code(400).send({ error: '没有需要保存的设置项' });
   }
@@ -331,6 +333,7 @@ app.put('/api/settings', async (req, reply) => {
     // 配置改动是否需要换新进程：比对生效配置的接入变量版本（编辑非生效配置、只改名不会白重启）
     const revBefore = settings.claudeEnvRev();
     if (body.permissionPolicy !== undefined) settings.setPermissionPolicy(body.permissionPolicy);
+    if (body.permissionTimeoutMinutes !== undefined) settings.setPermissionTimeoutMinutes(body.permissionTimeoutMinutes);
     if (body.taskExecutionMode !== undefined) {
       settings.setTaskExecutionMode(body.taskExecutionMode);
       tasks.kickQueue();

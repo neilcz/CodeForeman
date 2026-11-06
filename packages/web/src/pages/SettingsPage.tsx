@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Button, Card, Input, Popconfirm, Radio, Select, Space, Switch, Typography } from 'antd';
+import { App, Button, Card, Input, InputNumber, Popconfirm, Radio, Select, Space, Switch, Typography } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { ClaudeAuthStyle, ClaudeProfileInfo, InstructionItem, PermissionPolicy, TaskExecutionMode } from '@codeforeman/shared';
 import { api } from '../api';
@@ -7,6 +7,7 @@ import SshKeysCard from '../SshKeysCard';
 
 interface SettingsResp {
   permissionPolicy: PermissionPolicy;
+  permissionTimeoutMinutes: number;
   taskExecutionMode: TaskExecutionMode;
   instructions: InstructionItem[];
   claudeProfiles: ClaudeProfileInfo[];
@@ -65,6 +66,7 @@ const POLICY_OPTIONS: { value: PermissionPolicy; label: string; desc: string }[]
 
 export default function SettingsPage({ me }: { me: { role: string } | null }) {
   const [policy, setPolicy] = useState<PermissionPolicy>('allow-except-delete');
+  const [permissionTimeoutMinutes, setPermissionTimeoutMinutes] = useState(0);
   const [executionMode, setExecutionMode] = useState<TaskExecutionMode>('parallel');
   const [instructions, setInstructions] = useState<InstructionItem[]>([]);
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
@@ -76,6 +78,7 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
 
   const applySettings = (s: SettingsResp) => {
     setPolicy(s.permissionPolicy);
+    setPermissionTimeoutMinutes(s.permissionTimeoutMinutes);
     setExecutionMode(s.taskExecutionMode);
     setInstructions(s.instructions);
     setProfiles(s.claudeProfiles.map(toRow));
@@ -97,6 +100,19 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
     } catch (e) {
       setPolicy(prev);
       message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changePermissionTimeout = async () => {
+    setSaving(true);
+    try {
+      await api.put('/api/settings', { permissionTimeoutMinutes });
+      message.success(permissionTimeoutMinutes === 0 ? '已设为永不过期，对新审批生效' : `已设为 ${permissionTimeoutMinutes} 分钟，对新审批生效`);
+    } catch (e) {
+      message.error((e as Error).message);
+      api.get<SettingsResp>('/api/settings').then(applySettings).catch(() => {});
     } finally {
       setSaving(false);
     }
@@ -257,6 +273,22 @@ export default function SettingsPage({ me }: { me: { role: string } | null }) {
             ))}
           </Space>
         </Radio.Group>
+        <div style={{ marginTop: 20 }}>
+          <Space wrap>
+            <Typography.Text>审批等待时间</Typography.Text>
+            <InputNumber
+              min={0}
+              precision={0}
+              value={permissionTimeoutMinutes}
+              disabled={!isAdmin || saving}
+              addonAfter="分钟"
+              onChange={(v) => setPermissionTimeoutMinutes(v ?? 0)}
+              onBlur={() => void changePermissionTimeout()}
+              onPressEnter={(e) => e.currentTarget.blur()}
+            />
+            <Typography.Text type="secondary">填 0 表示永不过期，直到用户反馈或中断；对新发起的审批生效</Typography.Text>
+          </Space>
+        </div>
         {!isAdmin && (
           <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
             只有管理员可以修改权限策略。
